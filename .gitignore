@@ -1,8 +1,20 @@
-# Java compiled files
-*.class
+# Maven build output
+target/
 
-# VS Code
+# VS Code / Java extension files
 .vscode/
+.classpath
+.project
+.settings/
+.factorypath
+bin/
 
-# macOS
+.idea/
+*.iml
+
+# OS clutter
 .DS_Store
+Thumbs.db
+
+# Classpath file from `mvn dependency:build-classpath`, if you made one
+cp.txt
