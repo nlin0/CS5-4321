@@ -10,155 +10,155 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class TypeInferenceTest {
 
-  @Test
-  void infersInteger() {
-    assertEquals(
-        DataType.INTEGER,
-        TypeInference.inferValue("123"));
+    @Test
+    void infersInteger() {
+        assertEquals(
+            DataType.INTEGER,
+            TypeInference.inferValue("123"));
 
-    assertEquals(
-        DataType.INTEGER,
-        TypeInference.inferValue("-42"));
+        assertEquals(
+            DataType.INTEGER,
+            TypeInference.inferValue("-42"));
 
-    assertEquals(
-        DataType.INTEGER,
-        TypeInference.inferValue("0"));
-  }
+        assertEquals(
+            DataType.INTEGER,
+            TypeInference.inferValue("0"));
+    }
 
-  @Test
-  void infersFloat() {
-    assertEquals(
-        DataType.FLOAT,
-        TypeInference.inferValue("3.14"));
+    @Test
+    void infersFloat() {
+        assertEquals(
+            DataType.FLOAT,
+            TypeInference.inferValue("3.14"));
 
-    assertEquals(
-        DataType.FLOAT,
-        TypeInference.inferValue("-0.5"));
+        assertEquals(
+            DataType.FLOAT,
+            TypeInference.inferValue("-0.5"));
 
-    assertEquals(
-        DataType.FLOAT,
-        TypeInference.inferValue("1.0"));
-  }
+        assertEquals(
+            DataType.FLOAT,
+            TypeInference.inferValue("1.0"));
+    }
 
-  @Test
-  void infersBoolean() {
-    assertEquals(
-        DataType.BOOLEAN,
-        TypeInference.inferValue("true"));
+    @Test
+    void infersBoolean() {
+        assertEquals(
+            DataType.BOOLEAN,
+            TypeInference.inferValue("true"));
 
-    assertEquals(
-        DataType.BOOLEAN,
-        TypeInference.inferValue("false"));
+        assertEquals(
+            DataType.BOOLEAN,
+            TypeInference.inferValue("false"));
 
-    assertEquals(
-        DataType.BOOLEAN,
-        TypeInference.inferValue("TRUE"));
-  }
+        assertEquals(
+            DataType.BOOLEAN,
+            TypeInference.inferValue("TRUE"));
+    }
 
-  @Test
-  void infersString() {
-    assertEquals(
-        DataType.STRING,
-        TypeInference.inferValue("Nicole"));
+    @Test
+    void infersString() {
+        assertEquals(
+            DataType.STRING,
+            TypeInference.inferValue("Example"));
 
-    assertEquals(
-        DataType.STRING,
-        TypeInference.inferValue("Computer Science"));
+        assertEquals(
+            DataType.STRING,
+            TypeInference.inferValue("Sample Text"));
 
-    assertEquals(
-        DataType.STRING,
-        TypeInference.inferValue("123abc"));
-  }
+        assertEquals(
+            DataType.STRING,
+            TypeInference.inferValue("123abc"));
+    }
 
-  @Test
-  void trimsWhitespaceBeforeInference() {
-    assertEquals(
-        DataType.INTEGER,
-        TypeInference.inferValue("  123  "));
+    @Test
+    void trimsWhitespaceBeforeInference() {
+        assertEquals(
+            DataType.INTEGER,
+            TypeInference.inferValue("  123  "));
 
-    assertEquals(
-        DataType.BOOLEAN,
-        TypeInference.inferValue(" TRUE "));
-  }
+        assertEquals(
+            DataType.BOOLEAN,
+            TypeInference.inferValue(" TRUE "));
+    }
 
-  @Test
-  void rejectsBlankSingleValue() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> TypeInference.inferValue(""));
+    @Test
+    void rejectsBlankSingleValue() {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> TypeInference.inferValue(""));
 
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> TypeInference.inferValue("   "));
-  }
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> TypeInference.inferValue("   "));
+    }
 
-  @Test
-  void infersIntegerColumn() {
-    List<String> values = List.of("1", "2", "3", "4");
+    @Test
+    void infersIntegerColumn() {
+        List<String> values = List.of("1", "2", "3", "4");
 
-    assertEquals(
-        DataType.INTEGER,
-        TypeInference.inferColumn(values));
-  }
+        assertEquals(
+            DataType.INTEGER,
+            TypeInference.inferColumn(values));
+    }
 
-  @Test
-  void infersFloatColumn() {
-    List<String> values = List.of("1.5", "2.7", "3.2");
+    @Test
+    void infersFloatColumn() {
+        List<String> values = List.of("1.5", "2.7", "3.2");
 
-    assertEquals(
-        DataType.FLOAT,
-        TypeInference.inferColumn(values));
-  }
+        assertEquals(
+            DataType.FLOAT,
+            TypeInference.inferColumn(values));
+    }
 
-  @Test
-  void promotesIntegerColumnToFloat() {
-    List<String> values = List.of("1", "2", "3.5", "4");
+    @Test
+    void promotesIntegerColumnToFloat() {
+        List<String> values = List.of("1", "2", "3.5", "4");
 
-    assertEquals(
-        DataType.FLOAT,
-        TypeInference.inferColumn(values));
-  }
+        assertEquals(
+            DataType.FLOAT,
+            TypeInference.inferColumn(values));
+    }
 
-  @Test
-  void infersBooleanColumn() {
-    List<String> values = List.of("true", "false", "TRUE");
+    @Test
+    void infersBooleanColumn() {
+        List<String> values = List.of("true", "false", "TRUE");
 
-    assertEquals(
-        DataType.BOOLEAN,
-        TypeInference.inferColumn(values));
-  }
+        assertEquals(
+            DataType.BOOLEAN,
+            TypeInference.inferColumn(values));
+    }
 
-  @Test
-  void mixedTypesBecomeString() {
-    List<String> values = List.of("1", "Nicole", "3");
+    @Test
+    void mixedTypesBecomeString() {
+        List<String> values = List.of("1", "Example", "3");
 
-    assertEquals(
-        DataType.STRING,
-        TypeInference.inferColumn(values));
-  }
+        assertEquals(
+            DataType.STRING,
+            TypeInference.inferColumn(values));
+    }
 
-  @Test
-  void ignoresBlankValuesDuringInference() {
-    List<String> values = Arrays.asList("1", "", null, "3");
+    @Test
+    void ignoresBlankValuesDuringInference() {
+        List<String> values = Arrays.asList("1", "", null, "3");
 
-    assertEquals(
-        DataType.INTEGER,
-        TypeInference.inferColumn(values));
-  }
+        assertEquals(
+            DataType.INTEGER,
+            TypeInference.inferColumn(values));
+    }
 
-  @Test
-  void allBlankColumnDefaultsToString() {
-    List<String> values = Arrays.asList("", " ", null);
+    @Test
+    void allBlankColumnDefaultsToString() {
+        List<String> values = Arrays.asList("", " ", null);
 
-    assertEquals(
-        DataType.STRING,
-        TypeInference.inferColumn(values));
-  }
+        assertEquals(
+            DataType.STRING,
+            TypeInference.inferColumn(values));
+    }
 
-  @Test
-  void rejectsNullColumnList() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> TypeInference.inferColumn(null));
-  }
+    @Test
+    void rejectsNullColumnList() {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> TypeInference.inferColumn(null));
+    }
 }
