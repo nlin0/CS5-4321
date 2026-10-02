@@ -8,7 +8,21 @@ public class Schema {
     private final List<Column> columns;
 
     public Schema(List<Column> columns) {
-        this.columns = new ArrayList<>(columns);
+
+        this.columns = new ArrayList<>();
+
+        for (Column column : columns) {
+
+            for (Column existing : this.columns) {
+                if (existing.getName().equalsIgnoreCase(column.getName())) {
+                    throw new IllegalArgumentException(
+                            "Duplicate column: " + column.getName()
+                    );
+                }
+            }
+
+            this.columns.add(column);
+        }
     }
 
     public List<Column> getColumns() {
