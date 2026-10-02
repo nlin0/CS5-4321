@@ -1,5 +1,6 @@
 package com.group3.data;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -42,6 +43,8 @@ public class Database {
     }
 
     public Collection<Table> getTables() {
-        return tables.values();
+        return Collections.unmodifiableCollection(
+                tables.values()
+        );
     }
 }
