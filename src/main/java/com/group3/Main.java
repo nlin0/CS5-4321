@@ -1,14 +1,19 @@
 package com.group3;
-import com.group3.parser.Query;
-import com.group3.parser.SQLParser;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 
 public class Main {
     public static void main(String[] args) throws Exception {
-        SQLParser parser = new SQLParser();
+        Cli cli = new Cli(System.out);
 
-        Query query = parser.parse("SELECT name, age FROM students");
+        // Optional arguments: script files to run before the prompt starts.
+        for (String script : args) {
+            cli.execute(".read " + script);
+        }
 
-        System.out.println("Table: " + query.getTableName());
-        System.out.println("Columns: " + query.getColumns());
+        System.out.println("Type .help for commands.");
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
+        cli.run(in, System.console() != null);
     }
 }

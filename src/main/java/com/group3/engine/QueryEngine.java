@@ -1,17 +1,63 @@
 package com.group3.engine;
 
+import java.util.ArrayList;
+import java.util.List;
+
+import com.group3.data.Column;
+import com.group3.data.Database;
+import com.group3.data.Row;
+import com.group3.data.Schema;
+import com.group3.data.Table;
 import com.group3.parser.Query;
 
 public class QueryEngine {
 
+    private final Database database;
+
+    public QueryEngine(Database database) {
+        if (database == null) {
+            throw new IllegalArgumentException("Database is required");
+        }
+        this.database = database;
+    }
+
     public QueryResult processQuery(Query query) {
-        /* 
-        Steps:
-        1. Retrieve query.getTableName() from the catalog.
-        2. Scan its rows.
-        2. Select all columns using query.getColumns() (* means take all columns of the table).
-        3. Return the result.
-        */         
-        return null;
+        Table table = database.getTable(query.getTableName());
+        Schema source = table.getSchema();
+
+        List<Integer> indexes = new ArrayList<>();
+        for (String name : query.getColumns()) {
+            if (name.equals("*")) {
+                for (int i = 0; i < source.size(); i++) {
+                    indexes.add(i);
+                }
+            } else {
+                int index = source.indexOf(name);
+                if (index == -1) {
+                    throw new IllegalArgumentException("Column not found: " + name);
+                }
+                indexes.add(index);
+            }
+        }
+
+        List<Column> columns = new ArrayList<>();
+        for (int index : indexes) {
+            columns.add(source.getColumn(index));
+        }
+
+        List<Row> rows = new ArrayList<>();
+        for (Row row : table.getRows()) {
+            rows.add(project(row, indexes));
+        }
+
+        return new QueryResult(new Schema(columns), rows);
+    }
+
+    private Row project(Row row, List<Integer> indexes) {
+        List<com.group3.data.Value> values = new ArrayList<>();
+        for (int index : indexes) {
+            values.add(row.get(index));
+        }
+        return new Row(values);
     }
 }
