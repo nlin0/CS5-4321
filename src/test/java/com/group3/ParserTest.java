@@ -78,11 +78,37 @@ class ParserTest {
     }
 
     @Test
-    void expressionsInSelectListAreRejected() {
-        assertThrows(UnsupportedOperationException.class,
-            () -> parser.parse("SELECT COUNT(*) FROM t"));
+    void unsupportedExpressionsInSelectListAreRejected() {
         assertThrows(UnsupportedOperationException.class,
             () -> parser.parse("SELECT age + 1 FROM t"));
+    }
+
+    @Test
+    void parsesAggregatesAndGroupBy() {
+        Query query = parser.parse("SELECT department, COUNT(*) AS people, AVG(salary) FROM staff GROUP BY department");
+
+        assertEquals(List.of("department"), query.getColumns());
+        assertEquals(List.of("department"), query.getGroupByColumns());
+        assertEquals(2, query.getAggregates().size());
+        assertEquals("people", query.getAggregates().get(0).outputName());
+        assertEquals("salary", query.getAggregates().get(1).column());
+    }
+
+    @Test
+    void parsesHavingWithAnAggregateAlias() {
+        Query query = parser.parse("SELECT department, COUNT(*) AS people FROM staff "
+            + "GROUP BY department HAVING people >= 2");
+
+        assertNotNull(query.getHaving());
+    }
+
+    @Test
+    void parsesCompoundHavingConditions() {
+        Query query = parser.parse("SELECT department, COUNT(*) AS people, AVG(salary) AS average_salary "
+            + "FROM staff GROUP BY department "
+            + "HAVING people >= 2 AND (average_salary > 50000 OR department = 'Engineering')");
+
+        assertNotNull(query.getHaving());
     }
 
     @Test

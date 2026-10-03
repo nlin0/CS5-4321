@@ -9,6 +9,8 @@ import com.group3.data.Row;
 import com.group3.data.Schema;
 import com.group3.data.Table;
 import com.group3.parser.Query;
+import com.group3.operator.AggregateOperator;
+import com.group3.operator.FilterOperator;
 
 public class QueryEngine {
 
@@ -23,6 +25,13 @@ public class QueryEngine {
 
     public QueryResult processQuery(Query query) {
         Table table = database.getTable(query.getTableName());
+        if (query.hasAggregates()) {
+            QueryResult aggregateResult = new AggregateOperator().execute(
+                table, query.getGroupByColumns(), query.getAggregates());
+            List<Row> filteredRows = new FilterOperator().apply(
+                aggregateResult.getSchema(), aggregateResult.getRows(), query.getHaving());
+            return new QueryResult(aggregateResult.getSchema(), filteredRows);
+        }
         Schema source = table.getSchema();
 
         List<Integer> indexes = new ArrayList<>();
