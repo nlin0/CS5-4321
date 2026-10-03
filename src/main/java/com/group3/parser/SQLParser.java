@@ -69,16 +69,7 @@ public class SQLParser {
                 } catch (IllegalArgumentException e) {
                     throw new UnsupportedOperationException("Unsupported SELECT function: " + function.getName());
                 }
-                String argument;
-                if (function.isAllColumns()) {
-                    argument = "*";
-                } else if (function.getParameters() != null
-                        && function.getParameters().getExpressions().size() == 1
-                        && function.getParameters().getExpressions().get(0) instanceof Column column) {
-                    argument = column.getColumnName();
-                } else {
-                    throw new UnsupportedOperationException("Aggregate functions require one column or *");
-                }
+                String argument = aggregateArgument(function);
                 String alias = item.getAlias() == null ? null : item.getAlias().getName();
                 aggregates.add(new AggregateExpression(aggregateFunction, argument, alias));
             } else {
@@ -169,6 +160,31 @@ public class SQLParser {
 
     private String aggregateText(AggregateExpression aggregate) {
         return aggregate.function().name().toLowerCase(Locale.ROOT) + "(" + aggregate.column() + ")";
+    }
+
+    /**
+     * JSqlParser 5 represents aggregate parameters differently for different
+     * function forms. Its normalized function text is stable for our restricted
+     * syntax, so extract and validate the one supported argument from it here.
+     */
+    private String aggregateArgument(Function function) {
+        String text = function.toString().trim();
+        int openParen = text.indexOf('(');
+        int closeParen = text.lastIndexOf(')');
+        if (openParen < 1 || closeParen != text.length() - 1) {
+            throw new UnsupportedOperationException("Aggregate functions require one column or *");
+        }
+
+        String argument = text.substring(openParen + 1, closeParen).trim();
+        if (argument.equals("*")) return argument;
+
+        // Permit an optional table qualifier (for example staff.salary), but
+        // retain the unqualified column name used by this project's Schema.
+        if (!argument.matches("(?i)([a-z_][a-z0-9_]*\\.)?[a-z_][a-z0-9_]*")) {
+            throw new UnsupportedOperationException("Aggregate functions require one column or *");
+        }
+        int qualifier = argument.lastIndexOf('.');
+        return qualifier < 0 ? argument : argument.substring(qualifier + 1);
     }
 
     private Value parseLiteral(String rawValue) {
