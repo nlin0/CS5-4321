@@ -24,6 +24,16 @@ public class Row {
     }
 
     @Override
+    public boolean equals(Object obj) {
+        return this == obj || (obj instanceof Row other && values.equals(other.values));
+    }
+
+    @Override
+    public int hashCode() {
+        return values.hashCode();
+    }
+
+    @Override
     public String toString() {
         return values.toString();
     }

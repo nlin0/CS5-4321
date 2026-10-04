@@ -120,4 +120,41 @@ class QueryEngineTest {
         assertThrows(UnsupportedOperationException.class,
             () -> result.getRows().add(row("Eve", 1)));
     }
+
+    @Test
+    void orderByLimitAndDistinct() {
+        com.group3.parser.SQLParser parser = new com.group3.parser.SQLParser();
+        Table t = new Table("t", new Schema(List.of(
+            new Column("name", DataType.STRING), new Column("age", DataType.INTEGER))));
+        t.addRow(row("Bob", 20));
+        t.addRow(row("Ada", 30));
+        t.addRow(row("Cy", 20));
+        t.addRow(row("Dee", null));
+        t.addRow(row("Eve", 30));
+        Database db = new Database();
+        db.addTable(t);
+        QueryEngine e = new QueryEngine(db);
+
+        QueryResult r = e.processQuery(parser.parse("SELECT name FROM t ORDER BY age DESC, name ASC"));
+        assertEquals(List.of("Ada", "Eve", "Bob", "Cy", "Dee"), names(r));
+
+        r = e.processQuery(parser.parse("SELECT name FROM t ORDER BY age, name DESC LIMIT 2"));
+        assertEquals(List.of("Dee", "Cy"), names(r));
+
+        r = e.processQuery(parser.parse("SELECT DISTINCT age FROM t ORDER BY age DESC"));
+        assertEquals(3, r.getRowCount());
+        assertEquals(30, r.getRows().get(0).get(0).getValue());
+
+        r = e.processQuery(parser.parse("SELECT age, COUNT(*) AS n FROM t GROUP BY age ORDER BY n DESC, age LIMIT 1"));
+        assertEquals(20, r.getRows().get(0).get(0).getValue());
+
+        assertEquals(0, e.processQuery(parser.parse("SELECT * FROM t LIMIT 0")).getRowCount());
+        assertThrows(IllegalArgumentException.class,
+            () -> e.processQuery(parser.parse("SELECT * FROM t ORDER BY nope")));
+        assertThrows(UnsupportedOperationException.class, () -> parser.parse("SELECT * FROM t LIMIT 1 OFFSET 1"));
+    }
+
+    private static List<Object> names(QueryResult r) {
+        return r.getRows().stream().map(x -> x.get(0).getValue()).toList();
+    }
 }

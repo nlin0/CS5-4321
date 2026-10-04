@@ -13,7 +13,10 @@ import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.select.AllColumns;
 import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.statement.select.Limit;
+import net.sf.jsqlparser.statement.select.OrderByElement;
 import net.sf.jsqlparser.statement.select.SelectItem;
+import net.sf.jsqlparser.expression.LongValue;
 import net.sf.jsqlparser.expression.Function;
 import com.group3.operator.AggregateExpression;
 import com.group3.operator.AggregateFunction;
@@ -92,7 +95,46 @@ public class SQLParser {
             throw new UnsupportedOperationException("Selected non-aggregate columns must match GROUP BY columns");
         }
         Expression having = parseHaving(select.getHaving(), aggregates, groupByColumns);
-        return new Query(table.getFullyQualifiedName(), columns, groupByColumns, aggregates, having);
+        List<OrderByItem> orderBy = parseOrderBy(select, aggregates, groupByColumns);
+        Integer limit = parseLimit(select);
+        boolean distinct = select.getDistinct() != null;
+        return new Query(table.getFullyQualifiedName(), columns, groupByColumns, aggregates,
+            having, orderBy, limit, distinct);
+    }
+
+    private List<OrderByItem> parseOrderBy(PlainSelect select, List<AggregateExpression> aggregates,
+                                           List<String> groupByColumns) {
+        List<OrderByItem> items = new ArrayList<>();
+        if (select.getOrderByElements() == null) return items;
+        for (OrderByElement element : select.getOrderByElements()) {
+            String name;
+            if (element.getExpression() instanceof Column column) {
+                name = column.getColumnName();
+            } else if (!aggregates.isEmpty() && element.getExpression() instanceof Function) {
+                name = element.getExpression().toString();
+            } else {
+                throw new UnsupportedOperationException("ORDER BY supports only column names");
+            }
+            if (!aggregates.isEmpty()) {
+                name = resolveHavingColumn(name, aggregates, groupByColumns);
+            }
+            items.add(new OrderByItem(name, element.isAsc()));
+        }
+        return items;
+    }
+
+    private Integer parseLimit(PlainSelect select) {
+        if (select.getOffset() != null) {
+            throw new UnsupportedOperationException("OFFSET is not supported");
+        }
+        Limit limit = select.getLimit();
+        if (limit == null) return null;
+        if (limit.getOffset() != null
+                || !(limit.getRowCount() instanceof LongValue count)
+                || count.getValue() < 0 || count.getValue() > Integer.MAX_VALUE) {
+            throw new UnsupportedOperationException("LIMIT requires a non-negative integer");
+        }
+        return (int) count.getValue();
     }
 
     private Expression parseHaving(net.sf.jsqlparser.expression.Expression having,

@@ -10,7 +10,9 @@ import com.group3.data.Schema;
 import com.group3.data.Table;
 import com.group3.parser.Query;
 import com.group3.operator.AggregateOperator;
+import com.group3.operator.DistinctOperator;
 import com.group3.operator.FilterOperator;
+import com.group3.operator.SortOperator;
 
 public class QueryEngine {
 
@@ -30,7 +32,7 @@ public class QueryEngine {
                 table, query.getGroupByColumns(), query.getAggregates());
             List<Row> filteredRows = new FilterOperator().apply(
                 aggregateResult.getSchema(), aggregateResult.getRows(), query.getHaving());
-            return new QueryResult(aggregateResult.getSchema(), filteredRows);
+            return finish(query, aggregateResult.getSchema(), filteredRows);
         }
         Schema source = table.getSchema();
 
@@ -54,12 +56,30 @@ public class QueryEngine {
             columns.add(source.getColumn(index));
         }
 
+        // Sort on the source schema so ORDER BY may use columns that are not selected.
+        List<Row> sorted = new SortOperator().apply(source, table.getRows(), query.getOrderBy());
         List<Row> rows = new ArrayList<>();
-        for (Row row : table.getRows()) {
+        for (Row row : sorted) {
             rows.add(project(row, indexes));
         }
 
-        return new QueryResult(new Schema(columns), rows);
+        return distinctAndLimit(query, new Schema(columns), rows);
+    }
+
+    private QueryResult finish(Query query, Schema schema, List<Row> rows) {
+        List<Row> sorted = new SortOperator().apply(schema, rows, query.getOrderBy());
+        return distinctAndLimit(query, schema, sorted);
+    }
+
+    /** Applies DISTINCT then LIMIT to rows that are already sorted. */
+    private QueryResult distinctAndLimit(Query query, Schema schema, List<Row> rows) {
+        if (query.isDistinct()) {
+            rows = new DistinctOperator().apply(rows);
+        }
+        if (query.getLimit() != null && query.getLimit() < rows.size()) {
+            rows = rows.subList(0, query.getLimit());
+        }
+        return new QueryResult(schema, rows);
     }
 
     private Row project(Row row, List<Integer> indexes) {
