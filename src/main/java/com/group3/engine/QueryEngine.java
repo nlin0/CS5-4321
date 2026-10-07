@@ -8,12 +8,18 @@ import com.group3.data.Database;
 import com.group3.data.Row;
 import com.group3.data.Schema;
 import com.group3.data.Table;
+import com.group3.data.Value;
 import com.group3.parser.Query;
+import com.group3.parser.SelectColumn;
 import com.group3.operator.AggregateOperator;
 import com.group3.operator.DistinctOperator;
 import com.group3.operator.FilterOperator;
 import com.group3.operator.SortOperator;
 
+/**
+ * Runs a Query as a pipeline:
+ * FROM -> WHERE -> GROUP BY/aggregates -> HAVING -> ORDER BY -> SELECT -> DISTINCT -> LIMIT.
+ */
 public class QueryEngine {
 
     private final Database database;
@@ -26,49 +32,64 @@ public class QueryEngine {
     }
 
     public QueryResult processQuery(Query query) {
+        // FROM
         Table table = database.getTable(query.getTableName());
+        Schema schema = table.getSchema();
+
+        // WHERE, against the source columns
+        List<Row> rows = new FilterOperator().apply(schema, table.getRows(), query.getWhere());
+
+        // GROUP BY / aggregates, then HAVING against the grouped rows
         if (query.hasAggregates()) {
-            QueryResult aggregateResult = new AggregateOperator().execute(
-                table, query.getGroupByColumns(), query.getAggregates());
-            List<Row> filteredRows = new FilterOperator().apply(
-                aggregateResult.getSchema(), aggregateResult.getRows(), query.getHaving());
-            return finish(query, aggregateResult.getSchema(), filteredRows);
+            Table filtered = new Table(table.getName(), schema, rows);
+            QueryResult grouped = new AggregateOperator().execute(
+                filtered, query.getGroupByColumns(), query.getAggregates());
+            schema = grouped.getSchema();
+            rows = new FilterOperator().apply(schema, grouped.getRows(), query.getHaving());
         }
-        Schema source = table.getSchema();
 
+        // Resolve the SELECT list up front so an unknown column is reported before any work is done.
         List<Integer> indexes = new ArrayList<>();
-        for (String name : query.getColumns()) {
-            if (name.equals("*")) {
-                for (int i = 0; i < source.size(); i++) {
-                    indexes.add(i);
-                }
-            } else {
-                int index = source.indexOf(name);
-                if (index == -1) {
-                    throw new IllegalArgumentException("Column not found: " + name);
-                }
-                indexes.add(index);
-            }
-        }
-
         List<Column> columns = new ArrayList<>();
-        for (int index : indexes) {
-            columns.add(source.getColumn(index));
-        }
+        resolveSelectList(query.getSelectList(), schema, indexes, columns);
+        Schema outputSchema = new Schema(columns);
 
-        // Sort on the source schema so ORDER BY may use columns that are not selected.
-        List<Row> sorted = new SortOperator().apply(source, table.getRows(), query.getOrderBy());
-        List<Row> rows = new ArrayList<>();
+        // ORDER BY on the pre-projection schema, so it may use unselected columns and source names behind aliases.
+        List<Row> sorted = new SortOperator().apply(schema, rows, query.getOrderBy());
+
+        // SELECT
+        List<Row> projected = new ArrayList<>();
         for (Row row : sorted) {
-            rows.add(project(row, indexes));
+            projected.add(project(row, indexes));
         }
 
-        return distinctAndLimit(query, new Schema(columns), rows);
+        return distinctAndLimit(query, outputSchema, projected);
     }
 
-    private QueryResult finish(Query query, Schema schema, List<Row> rows) {
-        List<Row> sorted = new SortOperator().apply(schema, rows, query.getOrderBy());
-        return distinctAndLimit(query, schema, sorted);
+    /**
+     * Maps each SELECT item to the index of its input column and builds the output column.
+     * "*" expands to every input column; an alias renames the column but keeps its type and nullability.
+     */
+    private void resolveSelectList(List<SelectColumn> selectList, Schema input,
+                                   List<Integer> indexes, List<Column> columns) {
+        for (SelectColumn item : selectList) {
+            if (item.isStar()) {
+                for (int i = 0; i < input.size(); i++) {
+                    indexes.add(i);
+                    columns.add(input.getColumn(i));
+                }
+                continue;
+            }
+            int index = input.indexOf(item.source());
+            if (index == -1) {
+                throw new IllegalArgumentException("Column not found: " + item.source());
+            }
+            Column column = input.getColumn(index);
+            indexes.add(index);
+            columns.add(item.alias() == null
+                ? column
+                : new Column(item.outputName(), column.getType(), column.isNullable()));
+        }
     }
 
     /** Applies DISTINCT then LIMIT to rows that are already sorted. */
@@ -83,7 +104,7 @@ public class QueryEngine {
     }
 
     private Row project(Row row, List<Integer> indexes) {
-        List<com.group3.data.Value> values = new ArrayList<>();
+        List<Value> values = new ArrayList<>();
         for (int index : indexes) {
             values.add(row.get(index));
         }
