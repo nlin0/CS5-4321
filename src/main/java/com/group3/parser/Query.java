@@ -32,6 +32,9 @@ public class Query {
     public Query(String tableName, List<String> columns, List<String> groupByColumns,
                  List<AggregateExpression> aggregates, Expression having,
                  List<OrderByItem> orderBy, Integer limit, boolean distinct) {
+        if (limit != null && limit < 0) {
+            throw new IllegalArgumentException("LIMIT must be non-negative: " + limit);
+        }
         this.tableName = tableName;
         this.columns = List.copyOf(columns);
         this.groupByColumns = List.copyOf(groupByColumns);

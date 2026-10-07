@@ -1,7 +1,9 @@
 package com.group3.parser;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -12,6 +14,7 @@ import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.select.AllColumns;
+import net.sf.jsqlparser.statement.select.Distinct;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 import net.sf.jsqlparser.statement.select.Limit;
 import net.sf.jsqlparser.statement.select.OrderByElement;
@@ -58,13 +61,23 @@ public class SQLParser {
         Table table = (Table) select.getFromItem();
         List<String> columns = new ArrayList<>();
         List<AggregateExpression> aggregates = new ArrayList<>();
+        // Output name of each SELECT item, in order ("*" for SELECT *); used by ORDER BY <position>.
+        List<String> outputNames = new ArrayList<>();
+        // Lower-case alias -> source column, for "SELECT col AS alias ... ORDER BY alias".
+        Map<String, String> columnAliases = new HashMap<>();
 
         for (SelectItem<?> item : select.getSelectItems()) {
             if (item.getExpression() instanceof AllColumns) {
                 columns.add("*");
+                outputNames.add("*");
             } else if (item.getExpression() instanceof Column) {
                 Column column = (Column) item.getExpression();
                 columns.add(column.getColumnName());
+                outputNames.add(column.getColumnName());
+                if (item.getAlias() != null) {
+                    columnAliases.put(item.getAlias().getName().toLowerCase(Locale.ROOT),
+                        column.getColumnName());
+                }
             } else if (item.getExpression() instanceof Function function) {
                 AggregateFunction aggregateFunction;
                 try {
@@ -75,6 +88,7 @@ public class SQLParser {
                 String argument = aggregateArgument(function);
                 String alias = item.getAlias() == null ? null : item.getAlias().getName();
                 aggregates.add(new AggregateExpression(aggregateFunction, argument, alias));
+                outputNames.add(aggregates.get(aggregates.size() - 1).outputName());
             } else {
                 throw new UnsupportedOperationException(
                     "SELECT supports only column names or *"
@@ -95,32 +109,106 @@ public class SQLParser {
             throw new UnsupportedOperationException("Selected non-aggregate columns must match GROUP BY columns");
         }
         Expression having = parseHaving(select.getHaving(), aggregates, groupByColumns);
-        List<OrderByItem> orderBy = parseOrderBy(select, aggregates, groupByColumns);
+        List<OrderByItem> orderBy = parseOrderBy(select, aggregates, groupByColumns, outputNames, columnAliases);
         Integer limit = parseLimit(select);
-        boolean distinct = select.getDistinct() != null;
+        boolean distinct = parseDistinct(select);
+        if (distinct && aggregates.isEmpty() && !columns.contains("*")) {
+            requireOrderByInSelectList(orderBy, columns);
+        }
         return new Query(table.getFullyQualifiedName(), columns, groupByColumns, aggregates,
             having, orderBy, limit, distinct);
     }
 
     private List<OrderByItem> parseOrderBy(PlainSelect select, List<AggregateExpression> aggregates,
-                                           List<String> groupByColumns) {
+                                           List<String> groupByColumns, List<String> outputNames,
+                                           Map<String, String> columnAliases) {
         List<OrderByItem> items = new ArrayList<>();
         if (select.getOrderByElements() == null) return items;
         for (OrderByElement element : select.getOrderByElements()) {
+            net.sf.jsqlparser.expression.Expression expression = element.getExpression();
             String name;
-            if (element.getExpression() instanceof Column column) {
+            if (expression instanceof LongValue position) {
+                name = resolveOrderByPosition(position.getValue(), outputNames);
+            } else if (expression instanceof Column column) {
                 name = column.getColumnName();
-            } else if (!aggregates.isEmpty() && element.getExpression() instanceof Function) {
-                name = element.getExpression().toString();
+                String aliased = columnAliases.get(name.toLowerCase(Locale.ROOT));
+                if (aliased != null) {
+                    name = aliased;
+                }
+            } else if (!aggregates.isEmpty() && expression instanceof Function) {
+                name = expression.toString();
             } else {
-                throw new UnsupportedOperationException("ORDER BY supports only column names");
+                throw new UnsupportedOperationException(
+                    "ORDER BY supports only column names, aliases, positions, or selected aggregates");
             }
             if (!aggregates.isEmpty()) {
-                name = resolveHavingColumn(name, aggregates, groupByColumns);
+                name = resolveOrderByColumn(name, aggregates, groupByColumns);
             }
-            items.add(new OrderByItem(name, element.isAsc()));
+            items.add(new OrderByItem(name, element.isAsc(), nullsFirst(element)));
         }
         return items;
+    }
+
+    /**
+     * Resolves an ORDER BY name in an aggregate query to a column of the aggregate
+     * output: an aggregate alias, aggregate text such as COUNT(*), or a GROUP BY column.
+     * Same matching rules as resolveHavingColumn, but with an ORDER BY error message.
+     */
+    private String resolveOrderByColumn(String rawColumn, List<AggregateExpression> aggregates,
+                                        List<String> groupByColumns) {
+        String candidate = rawColumn.trim();
+        for (AggregateExpression aggregate : aggregates) {
+            if (aggregate.outputName().equalsIgnoreCase(candidate)
+                    || aggregateText(aggregate).equalsIgnoreCase(candidate)) {
+                return aggregate.outputName();
+            }
+        }
+        for (String groupByColumn : groupByColumns) {
+            if (groupByColumn.equalsIgnoreCase(candidate)) return groupByColumn;
+        }
+        throw new UnsupportedOperationException(
+            "ORDER BY must reference a selected aggregate, alias, or GROUP BY column: " + candidate);
+    }
+
+    /** Maps "ORDER BY 2" to the output name of the second SELECT item. */
+    private String resolveOrderByPosition(long position, List<String> outputNames) {
+        if (outputNames.contains("*")) {
+            throw new UnsupportedOperationException("ORDER BY position cannot be used with SELECT *");
+        }
+        if (position < 1 || position > outputNames.size()) {
+            throw new IllegalArgumentException("ORDER BY position " + position
+                + " is out of range (1-" + outputNames.size() + ")");
+        }
+        return outputNames.get((int) position - 1);
+    }
+
+    /** TRUE for NULLS FIRST, FALSE for NULLS LAST, null when not specified. */
+    private Boolean nullsFirst(OrderByElement element) {
+        if (element.getNullOrdering() == null) return null;
+        return element.getNullOrdering() == OrderByElement.NullOrdering.NULLS_FIRST;
+    }
+
+    private boolean parseDistinct(PlainSelect select) {
+        Distinct distinct = select.getDistinct();
+        if (distinct == null) return false;
+        if (distinct.getOnSelectItems() != null) {
+            throw new UnsupportedOperationException("DISTINCT ON is not supported");
+        }
+        return true;
+    }
+
+    /**
+     * With SELECT DISTINCT, sorting by a column that is not returned is ambiguous
+     * (which duplicate's value decides the position?), so standard SQL rejects it.
+     */
+    private void requireOrderByInSelectList(List<OrderByItem> orderBy, List<String> columns) {
+        for (OrderByItem item : orderBy) {
+            boolean selected = columns.stream().anyMatch(c -> c.equalsIgnoreCase(item.column()));
+            if (!selected) {
+                throw new UnsupportedOperationException(
+                    "With SELECT DISTINCT, ORDER BY columns must appear in the select list: " + item.column());
+            }
+        }
     }
 
     private Integer parseLimit(PlainSelect select) {
