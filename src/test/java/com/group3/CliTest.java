@@ -1,6 +1,7 @@
 package com.group3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.BufferedReader;
@@ -38,6 +39,33 @@ class CliTest {
         assertTrue(output.contains("Ada"));
         assertTrue(output.contains("(2 rows)"));
         assertTrue(output.contains("age"));
+    }
+
+    @Test
+    void sqlWhereFiltersLoadedCsv(@TempDir Path dir) throws Exception {
+        Path csv = dir.resolve("people.csv");
+        Files.writeString(csv, "id,name\n1,Ada\n2,Bob\n3,Cy\n");
+
+        String output = run(".load " + csv + "\nSELECT name FROM people WHERE id = 1;\n");
+
+        assertTrue(output.contains("Ada"));
+        assertTrue(output.contains("(1 row)"));
+        assertFalse(output.contains("Bob"));
+        assertFalse(output.contains("Cy"));
+    }
+
+    @Test
+    void unsupportedWhereReportsErrorAndAllowsNextQuery(@TempDir Path dir) throws Exception {
+        Path csv = dir.resolve("people.csv");
+        Files.writeString(csv, "id,name\n1,Ada\n2,Bob\n");
+
+        String output = run(".load " + csv + "\nSELECT name FROM people WHERE name LIKE 'B%';\n"
+            + "SELECT name FROM people WHERE id = 1;\n");
+
+        assertTrue(output.contains("Error: Unsupported WHERE expression"));
+        assertTrue(output.contains("Ada"));
+        assertTrue(output.contains("(1 row)"));
+        assertFalse(output.contains("Bob"));
     }
 
     @Test

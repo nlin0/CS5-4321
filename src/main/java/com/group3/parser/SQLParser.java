@@ -21,12 +21,30 @@ import net.sf.jsqlparser.statement.select.OrderByElement;
 import net.sf.jsqlparser.statement.select.SelectItem;
 import net.sf.jsqlparser.expression.LongValue;
 import net.sf.jsqlparser.expression.Function;
+import net.sf.jsqlparser.expression.BooleanValue;
+import net.sf.jsqlparser.expression.DoubleValue;
+import net.sf.jsqlparser.expression.NotExpression;
+import net.sf.jsqlparser.expression.NullValue;
+import net.sf.jsqlparser.expression.SignedExpression;
+import net.sf.jsqlparser.expression.StringValue;
+import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
+import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
+import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.NotEqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.GreaterThan;
+import net.sf.jsqlparser.expression.operators.relational.GreaterThanEquals;
+import net.sf.jsqlparser.expression.operators.relational.MinorThan;
+import net.sf.jsqlparser.expression.operators.relational.MinorThanEquals;
+import net.sf.jsqlparser.expression.operators.relational.ParenthesedExpressionList;
 import com.group3.operator.AggregateExpression;
 import com.group3.operator.AggregateFunction;
 import com.group3.expression.ComparisonExpression;
+import com.group3.expression.ComparisonOperator;
 import com.group3.expression.Expression;
+import com.group3.expression.InExpression;
 import com.group3.expression.IsNullExpression;
 import com.group3.expression.LogicalExpression;
+import com.group3.expression.Operand;
 import com.group3.data.DataType;
 import com.group3.data.Value;
 
@@ -115,8 +133,135 @@ public class SQLParser {
         if (distinct && aggregates.isEmpty() && !columns.contains("*")) {
             requireOrderByInSelectList(orderBy, columns);
         }
-        return new Query(table.getFullyQualifiedName(), columns, groupByColumns, aggregates,
-            having, orderBy, limit, distinct);
+        Expression where = select.getWhere() == null ? null : parseWhere(select.getWhere(), table);
+        // Preserve the existing projection behavior: plain columns, followed by aggregates.
+        List<SelectColumn> selectList = new ArrayList<>();
+        for (String column : columns) {
+            selectList.add(column.equals("*") ? SelectColumn.star() : SelectColumn.column(column, null));
+        }
+        for (AggregateExpression aggregate : aggregates) {
+            selectList.add(SelectColumn.aggregate(aggregate.outputName()));
+        }
+        return new Query(table.getFullyQualifiedName(),
+            table.getAlias() == null ? null : table.getAlias().getName(), selectList,
+            groupByColumns, aggregates, where, having, orderBy, limit, distinct);
+    }
+
+    /** Translate the validated AST directly so SQL precedence and parentheses are preserved. */
+    private Expression parseWhere(net.sf.jsqlparser.expression.Expression expression, Table table) {
+        expression = unwrapWhereParentheses(expression);
+        if (expression instanceof AndExpression and) {
+            return LogicalExpression.and(parseWhere(and.getLeftExpression(), table),
+                parseWhere(and.getRightExpression(), table));
+        }
+        if (expression instanceof OrExpression or) {
+            return LogicalExpression.or(parseWhere(or.getLeftExpression(), table),
+                parseWhere(or.getRightExpression(), table));
+        }
+        if (expression instanceof NotExpression not) {
+            return LogicalExpression.not(parseWhere(not.getExpression(), table));
+        }
+        if (expression instanceof EqualsTo || expression instanceof NotEqualsTo
+                || expression instanceof GreaterThan || expression instanceof GreaterThanEquals
+                || expression instanceof MinorThan || expression instanceof MinorThanEquals) {
+            var comparison = (net.sf.jsqlparser.expression.operators.relational.ComparisonOperator) expression;
+            if (comparison.getOldOracleJoinSyntax() != 0 || comparison.getOraclePriorPosition() != 0) {
+                throw unsupportedWhere(expression);
+            }
+            return new ComparisonExpression(parseWhereOperand(comparison.getLeftExpression(), table),
+                ComparisonOperator.fromSymbol(comparison.getStringExpression()),
+                parseWhereOperand(comparison.getRightExpression(), table));
+        }
+        if (expression instanceof net.sf.jsqlparser.expression.operators.relational.IsNullExpression isNull) {
+            if (isNull.getOldOracleJoinSyntax() != 0 || isNull.getOraclePriorPosition() != 0) {
+                throw unsupportedWhere(expression);
+            }
+            return new IsNullExpression(parseWhereOperand(isNull.getLeftExpression(), table), isNull.isNot());
+        }
+        if (expression instanceof net.sf.jsqlparser.expression.operators.relational.InExpression in) {
+            if (in.isGlobal() || in.getOldOracleJoinSyntax() != 0 || in.getOraclePriorPosition() != 0
+                    || !(in.getRightExpression() instanceof ParenthesedExpressionList<?> list)
+                    || list.isEmpty()) {
+                throw unsupportedWhere(expression);
+            }
+            List<Value> values = new ArrayList<>();
+            for (net.sf.jsqlparser.expression.Expression item : list) {
+                values.add(parseWhereLiteral(item));
+            }
+            Expression predicate = new InExpression(parseWhereOperand(in.getLeftExpression(), table), values);
+            return in.isNot() ? LogicalExpression.not(predicate) : predicate;
+        }
+        throw unsupportedWhere(expression);
+    }
+
+    private net.sf.jsqlparser.expression.Expression unwrapWhereParentheses(
+            net.sf.jsqlparser.expression.Expression expression) {
+        while (expression instanceof ParenthesedExpressionList<?> list && list.size() == 1) {
+            expression = list.get(0);
+        }
+        return expression;
+    }
+
+    private Operand parseWhereOperand(net.sf.jsqlparser.expression.Expression expression, Table table) {
+        expression = unwrapWhereParentheses(expression);
+        if (expression instanceof Column column) {
+            String qualifier = column.getTable() == null ? null : column.getTable().getFullyQualifiedName();
+            if (qualifier != null && !qualifier.isEmpty()
+                    && !qualifier.equalsIgnoreCase(table.getName())
+                    && !qualifier.equalsIgnoreCase(table.getFullyQualifiedName())
+                    && !(table.getAlias() != null && qualifier.equalsIgnoreCase(table.getAlias().getName()))) {
+                throw new IllegalArgumentException("Unknown table qualifier in WHERE: " + qualifier);
+            }
+            return Operand.column(column.getColumnName());
+        }
+        return Operand.literal(parseWhereLiteral(expression));
+    }
+
+    private Value parseWhereLiteral(net.sf.jsqlparser.expression.Expression expression) {
+        expression = unwrapWhereParentheses(expression);
+        int sign = 1;
+        boolean signed = false;
+        while (expression instanceof SignedExpression unary) {
+            signed = true;
+            if (unary.getSign() == '-') {
+                sign = -sign;
+            } else if (unary.getSign() != '+') {
+                throw unsupportedWhere(expression);
+            }
+            expression = unwrapWhereParentheses(unary.getExpression());
+        }
+        if (expression instanceof LongValue integer) {
+            try {
+                int value = integer.getBigIntegerValue().multiply(java.math.BigInteger.valueOf(sign)).intValueExact();
+                return new Value(DataType.INTEGER, value);
+            } catch (ArithmeticException e) {
+                throw new IllegalArgumentException("WHERE integer literal is outside the supported int range", e);
+            }
+        }
+        if (expression instanceof DoubleValue decimal) {
+            double value = sign * decimal.getValue();
+            if (!Double.isFinite(value)) {
+                throw new IllegalArgumentException("WHERE float literal must be finite");
+            }
+            return new Value(DataType.FLOAT, value);
+        }
+        if (!signed) {
+            if (expression instanceof StringValue string) {
+                return new Value(DataType.STRING, string.getValue().replace("''", "'"));
+            }
+            if (expression instanceof BooleanValue bool) {
+                return new Value(DataType.BOOLEAN, bool.getValue());
+            }
+            if (expression instanceof NullValue) {
+                // NULL's placeholder type is immaterial: expression evaluation checks null before types.
+                return new Value(DataType.STRING, null);
+            }
+        }
+        throw unsupportedWhere(expression);
+    }
+
+    private UnsupportedOperationException unsupportedWhere(net.sf.jsqlparser.expression.Expression expression) {
+        return new UnsupportedOperationException("Unsupported WHERE expression: " + expression);
     }
 
     private List<OrderByItem> parseOrderBy(PlainSelect select, List<AggregateExpression> aggregates,
