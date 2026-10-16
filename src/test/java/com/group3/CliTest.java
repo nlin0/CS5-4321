@@ -55,6 +55,39 @@ class CliTest {
     }
 
     @Test
+    void printsColumnAliasAsHeaderWithFilteredRows(@TempDir Path dir) throws Exception {
+        Path csv = dir.resolve("people.csv");
+        Files.writeString(csv, "id,name\n1,Ada\n2,Bob\n");
+
+        String output = run(".load " + csv + "\nSELECT name AS person FROM people WHERE id = 1;\n");
+
+        assertEquals("Loaded 2 rows into people\nperson\n------\nAda\n(1 row)\n", output);
+    }
+
+    @Test
+    void printsAggregateAndGroupAliasesInWrittenOrder(@TempDir Path dir) throws Exception {
+        Path csv = dir.resolve("people.csv");
+        Files.writeString(csv, "id,dept\n1,eng\n2,eng\n3,math\n");
+
+        String output = run(".load " + csv + "\nSELECT COUNT(*) AS n, dept AS team "
+            + "FROM people GROUP BY dept ORDER BY 1 DESC;\n");
+
+        assertEquals("Loaded 3 rows into people\nn | team\n--+-----\n2 | eng\n1 | math\n(2 rows)\n", output);
+    }
+
+    @Test
+    void reportsDuplicateAliasesThenRunsAQueryWithAQuotedAlias(@TempDir Path dir) throws Exception {
+        Path csv = dir.resolve("people.csv");
+        Files.writeString(csv, "id,name\n1,Ada\n2,Bob\n");
+
+        String output = run(".load " + csv + "\nSELECT id AS same, name AS same FROM people;\n"
+            + "SELECT name \"Person Name\" FROM people WHERE id = 1 ORDER BY \"Person Name\";\n");
+
+        assertEquals("Loaded 2 rows into people\nError: Duplicate column: same\n"
+            + "Person Name\n-----------\nAda\n(1 row)\n", output);
+    }
+
+    @Test
     void unsupportedWhereReportsErrorAndAllowsNextQuery(@TempDir Path dir) throws Exception {
         Path csv = dir.resolve("people.csv");
         Files.writeString(csv, "id,name\n1,Ada\n2,Bob\n");

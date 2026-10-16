@@ -90,9 +90,9 @@ class WhereParserTest {
     }
 
     @Test
-    void absentWhereAndExistingProjectionBehaviorAreUnchanged() {
+    void aliasIsPreservedWithoutIntroducingAWhereClause() {
         Query query = parser.parse("SELECT id AS identifier FROM t");
         assertNull(query.getWhere());
-        assertEquals("id", query.getSelectList().get(0).outputName());
+        assertEquals("identifier", query.getSelectList().get(0).outputName());
     }
 }

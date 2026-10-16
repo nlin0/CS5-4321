@@ -79,22 +79,21 @@ public class SQLParser {
         Table table = (Table) select.getFromItem();
         List<String> columns = new ArrayList<>();
         List<AggregateExpression> aggregates = new ArrayList<>();
-        // Output name of each SELECT item, in order ("*" for SELECT *); used by ORDER BY <position>.
-        List<String> outputNames = new ArrayList<>();
-        // Lower-case alias -> source column, for "SELECT col AS alias ... ORDER BY alias".
+        List<SelectColumn> selectList = new ArrayList<>();
+        // Lower-case output alias -> column in the pre-projection schema used by ORDER BY.
         Map<String, String> columnAliases = new HashMap<>();
 
         for (SelectItem<?> item : select.getSelectItems()) {
             if (item.getExpression() instanceof AllColumns) {
                 columns.add("*");
-                outputNames.add("*");
+                selectList.add(SelectColumn.star());
             } else if (item.getExpression() instanceof Column) {
                 Column column = (Column) item.getExpression();
                 columns.add(column.getColumnName());
-                outputNames.add(column.getColumnName());
-                if (item.getAlias() != null) {
-                    columnAliases.put(item.getAlias().getName().toLowerCase(Locale.ROOT),
-                        column.getColumnName());
+                String alias = item.getAlias() == null ? null : unquoteIdentifier(item.getAlias().getName());
+                selectList.add(SelectColumn.column(column.getColumnName(), alias));
+                if (alias != null) {
+                    columnAliases.put(alias.toLowerCase(Locale.ROOT), column.getColumnName());
                 }
             } else if (item.getExpression() instanceof Function function) {
                 AggregateFunction aggregateFunction;
@@ -104,9 +103,13 @@ public class SQLParser {
                     throw new UnsupportedOperationException("Unsupported SELECT function: " + function.getName());
                 }
                 String argument = aggregateArgument(function);
-                String alias = item.getAlias() == null ? null : item.getAlias().getName();
-                aggregates.add(new AggregateExpression(aggregateFunction, argument, alias));
-                outputNames.add(aggregates.get(aggregates.size() - 1).outputName());
+                String alias = item.getAlias() == null ? null : unquoteIdentifier(item.getAlias().getName());
+                AggregateExpression aggregate = new AggregateExpression(aggregateFunction, argument, alias);
+                aggregates.add(aggregate);
+                selectList.add(SelectColumn.aggregate(aggregate.outputName()));
+                if (alias != null) {
+                    columnAliases.put(alias.toLowerCase(Locale.ROOT), aggregate.outputName());
+                }
             } else {
                 throw new UnsupportedOperationException(
                     "SELECT supports only column names or *"
@@ -127,21 +130,13 @@ public class SQLParser {
             throw new UnsupportedOperationException("Selected non-aggregate columns must match GROUP BY columns");
         }
         Expression having = parseHaving(select.getHaving(), aggregates, groupByColumns);
-        List<OrderByItem> orderBy = parseOrderBy(select, aggregates, groupByColumns, outputNames, columnAliases);
+        List<OrderByItem> orderBy = parseOrderBy(select, aggregates, groupByColumns, selectList, columnAliases);
         Integer limit = parseLimit(select);
         boolean distinct = parseDistinct(select);
         if (distinct && aggregates.isEmpty() && !columns.contains("*")) {
             requireOrderByInSelectList(orderBy, columns);
         }
         Expression where = select.getWhere() == null ? null : parseWhere(select.getWhere(), table);
-        // Preserve the existing projection behavior: plain columns, followed by aggregates.
-        List<SelectColumn> selectList = new ArrayList<>();
-        for (String column : columns) {
-            selectList.add(column.equals("*") ? SelectColumn.star() : SelectColumn.column(column, null));
-        }
-        for (AggregateExpression aggregate : aggregates) {
-            selectList.add(SelectColumn.aggregate(aggregate.outputName()));
-        }
         return new Query(table.getFullyQualifiedName(),
             table.getAlias() == null ? null : table.getAlias().getName(), selectList,
             groupByColumns, aggregates, where, having, orderBy, limit, distinct);
@@ -265,7 +260,7 @@ public class SQLParser {
     }
 
     private List<OrderByItem> parseOrderBy(PlainSelect select, List<AggregateExpression> aggregates,
-                                           List<String> groupByColumns, List<String> outputNames,
+                                           List<String> groupByColumns, List<SelectColumn> selectList,
                                            Map<String, String> columnAliases) {
         List<OrderByItem> items = new ArrayList<>();
         if (select.getOrderByElements() == null) return items;
@@ -273,12 +268,15 @@ public class SQLParser {
             net.sf.jsqlparser.expression.Expression expression = element.getExpression();
             String name;
             if (expression instanceof LongValue position) {
-                name = resolveOrderByPosition(position.getValue(), outputNames);
+                name = resolveOrderByPosition(position.getValue(), selectList);
             } else if (expression instanceof Column column) {
-                name = column.getColumnName();
-                String aliased = columnAliases.get(name.toLowerCase(Locale.ROOT));
-                if (aliased != null) {
-                    name = aliased;
+                name = unquoteIdentifier(column.getColumnName());
+                // Only unqualified names can refer to SELECT aliases.
+                if (column.getTable() == null || column.getTable().getFullyQualifiedName().isEmpty()) {
+                    String aliased = columnAliases.get(name.toLowerCase(Locale.ROOT));
+                    if (aliased != null) {
+                        name = aliased;
+                    }
                 }
             } else if (!aggregates.isEmpty() && expression instanceof Function) {
                 name = expression.toString();
@@ -301,7 +299,8 @@ public class SQLParser {
      */
     private String resolveOrderByColumn(String rawColumn, List<AggregateExpression> aggregates,
                                         List<String> groupByColumns) {
-        String candidate = rawColumn.trim();
+        // Names have already been decoded; spaces inside a quoted alias are significant.
+        String candidate = rawColumn;
         for (AggregateExpression aggregate : aggregates) {
             if (aggregate.outputName().equalsIgnoreCase(candidate)
                     || aggregateText(aggregate).equalsIgnoreCase(candidate)) {
@@ -315,16 +314,23 @@ public class SQLParser {
             "ORDER BY must reference a selected aggregate, alias, or GROUP BY column: " + candidate);
     }
 
-    /** Maps "ORDER BY 2" to the output name of the second SELECT item. */
-    private String resolveOrderByPosition(long position, List<String> outputNames) {
-        if (outputNames.contains("*")) {
+    /** Maps an ordinal directly to its pre-projection column, without resolving aliases again. */
+    private String resolveOrderByPosition(long position, List<SelectColumn> selectList) {
+        if (selectList.stream().anyMatch(SelectColumn::isStar)) {
             throw new UnsupportedOperationException("ORDER BY position cannot be used with SELECT *");
         }
-        if (position < 1 || position > outputNames.size()) {
+        if (position < 1 || position > selectList.size()) {
             throw new IllegalArgumentException("ORDER BY position " + position
-                + " is out of range (1-" + outputNames.size() + ")");
+                + " is out of range (1-" + selectList.size() + ")");
         }
-        return outputNames.get((int) position - 1);
+        return selectList.get((int) position - 1).source();
+    }
+
+    private String unquoteIdentifier(String name) {
+        if (name.length() >= 2 && name.startsWith("\"") && name.endsWith("\"")) {
+            return name.substring(1, name.length() - 1).replace("\"\"", "\"");
+        }
+        return name;
     }
 
     /** TRUE for NULLS FIRST, FALSE for NULLS LAST, null when not specified. */
@@ -420,7 +426,7 @@ public class SQLParser {
 
     private String resolveHavingColumn(String rawColumn, List<AggregateExpression> aggregates,
                                        List<String> groupByColumns) {
-        String candidate = rawColumn.trim();
+        String candidate = unquoteIdentifier(rawColumn.trim());
         for (AggregateExpression aggregate : aggregates) {
             if (aggregate.outputName().equalsIgnoreCase(candidate)
                     || aggregateText(aggregate).equalsIgnoreCase(candidate)) {
