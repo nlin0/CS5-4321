@@ -152,7 +152,7 @@ class CliTest {
     void helpListsCommands() throws Exception {
         String output = run(".help\n");
 
-        for (String command : new String[] {".load", ".save", ".tables", ".schema", ".read", ".quit"}) {
+        for (String command : new String[] {".load", ".save", ".export", ".tables", ".schema", ".read", ".quit"}) {
             assertTrue(output.contains(command), command);
         }
     }

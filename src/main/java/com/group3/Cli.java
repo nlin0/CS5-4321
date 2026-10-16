@@ -30,6 +30,7 @@ public class Cli {
     private final CSVReader csvReader = new CSVReader();
     private final CSVWriter csvWriter = new CSVWriter();
     private final PrintStream out;
+    private QueryResult lastResult;
     private boolean running = true;
 
     public Cli(PrintStream out) {
@@ -91,10 +92,13 @@ public class Cli {
     }
 
     private void runSql(String sql) {
+        // A failed query must not leave an older result available for accidental export.
+        lastResult = null;
         String statement = sql.endsWith(";") ? sql.substring(0, sql.length() - 1) : sql;
         Query query = parser.parse(statement);
         QueryResult result = engine.processQuery(query);
         printResult(result);
+        lastResult = result;
     }
 
     private void runCommand(String input) throws IOException {
@@ -120,6 +124,7 @@ public class Cli {
                 csvWriter.write(database.getTable(parts[1]), parts[2]);
                 out.println("Saved " + parts[1] + " to " + parts[2]);
             }
+            case ".export" -> exportResult(exportPath(input.substring(parts[0].length())));
             case ".read" -> {
                 requireArgs(parts, 2, ".read <script.sql>");
                 readScript(parts[1]);
@@ -127,6 +132,30 @@ public class Cli {
             default -> throw new IllegalArgumentException(
                 "Unknown command: " + parts[0] + " (try .help)");
         }
+    }
+
+    /** Export accepts one path; double quotes allow spaces without changing other dot-commands. */
+    private String exportPath(String argument) {
+        String path = argument.trim();
+        if (path.length() >= 2 && path.startsWith("\"") && path.endsWith("\"")) {
+            path = path.substring(1, path.length() - 1);
+            if (!path.isBlank() && !path.contains("\"")) {
+                return path;
+            }
+        } else if (!path.isBlank() && !path.contains("\"")
+                && path.chars().noneMatch(Character::isWhitespace)) {
+            return path;
+        }
+        throw new IllegalArgumentException("Usage: .export <file.csv> (double-quote paths containing spaces)");
+    }
+
+    private void exportResult(String path) throws IOException {
+        if (lastResult == null) {
+            throw new IllegalStateException("No query result to export");
+        }
+        csvWriter.write(lastResult.getSchema(), lastResult.getRows(), path);
+        int count = lastResult.getRowCount();
+        out.println("Exported " + count + (count == 1 ? " row to " : " rows to ") + path);
     }
 
     private void requireArgs(String[] parts, int expected, String usage) {
@@ -180,6 +209,7 @@ public class Cli {
         out.println("Commands:");
         out.println("  .load <file.csv> [table]   load a CSV file as a table");
         out.println("  .save <table> <file.csv>   write a table to a CSV file");
+        out.println("  .export <file.csv>         write the latest query result to CSV");
         out.println("  .tables                    list loaded tables");
         out.println("  .schema <table>            show a table's columns");
         out.println("  .read <script.sql>         run commands from a file");
