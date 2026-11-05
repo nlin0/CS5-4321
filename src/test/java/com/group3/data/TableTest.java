@@ -5,6 +5,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -348,6 +349,59 @@ class TableTest {
 
 
     // ---------------------------------------------------
+    // PRIMARY KEY
+    // ---------------------------------------------------
+
+    @Test
+    void primaryKeyRejectsExistingDuplicate() {
+        Table table = new Table("students", idAndName(), List.of(named(1, "Ada"), named(1, "Bob")));
+
+        IllegalArgumentException e = assertThrows(
+            IllegalArgumentException.class,
+            () -> table.setPrimaryKey("id")
+        );
+
+        assertTrue(e.getMessage().contains("Duplicate primary key"));
+        assertNull(table.getPrimaryKeyColumn());
+    }
+
+    @Test
+    void primaryKeyRejectsNull() {
+        Schema schema = new Schema(List.of(
+            new Column("id", DataType.INTEGER),
+            new Column("name", DataType.STRING)
+        ));
+        Table table = new Table("students", schema, List.of(named(null, "Ada")));
+
+        IllegalArgumentException e = assertThrows(
+            IllegalArgumentException.class,
+            () -> table.setPrimaryKey("id")
+        );
+
+        assertTrue(e.getMessage().contains("cannot be NULL"));
+    }
+
+    @Test
+    void primaryKeyAcceptsANewUniqueValue() {
+        Table table = new Table("students", idAndName(), List.of(named(1, "Ada")));
+
+        table.setPrimaryKey("id");
+        table.addRow(named(2, "Bob"));
+
+        assertEquals("id", table.getPrimaryKeyColumn());
+        assertEquals(2, table.size());
+    }
+
+    @Test
+    void primaryKeyRejectsADuplicateAddedLater() {
+        Table table = new Table("students", idAndName(), List.of(named(1, "Ada")));
+        table.setPrimaryKey("id");
+
+        assertThrows(IllegalArgumentException.class, () -> table.addRow(named(1, "Bob")));
+        assertEquals(1, table.size());
+    }
+
+    // ---------------------------------------------------
     // HELPERS
     // ---------------------------------------------------
 
@@ -382,6 +436,20 @@ class TableTest {
                 new Value(DataType.STRING, "Alice"),
                 new Value(DataType.FLOAT, 3.91),
                 new Value(DataType.BOOLEAN, true)
+        ));
+    }
+
+    private Schema idAndName() {
+        return new Schema(List.of(
+            new Column("id", DataType.INTEGER),
+            new Column("name", DataType.STRING)
+        ));
+    }
+
+    private Row named(Integer id, String name) {
+        return new Row(List.of(
+            new Value(DataType.INTEGER, id),
+            new Value(DataType.STRING, name)
         ));
     }
 }

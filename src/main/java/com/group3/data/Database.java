@@ -47,4 +47,48 @@ public class Database {
                 tables.values()
         );
     }
+
+    /**
+     * Requires every non-null child value to match the parent primary key.
+     * A null child value is allowed. Later rows are checked in Table.addRow.
+     */
+    public void addForeignKey(
+            String childTable, String childColumn,
+            String parentTable, String parentColumn) {
+        Table child = getTable(childTable);
+        Table parent = getTable(parentTable);
+        if (parent.getPrimaryKeyColumn() == null
+                || !parent.getPrimaryKeyColumn().equalsIgnoreCase(parentColumn)) {
+            throw new IllegalArgumentException(
+                "Foreign key must reference the primary key of " + parent.getName()
+            );
+        }
+        int childIndex = child.getSchema().indexOf(childColumn);
+        if (childIndex < 0) {
+            throw new IllegalArgumentException("Column not found: " + childColumn);
+        }
+        Column childKey = child.getSchema().getColumn(childIndex);
+        Column parentKey = parent.getSchema().getColumn(parent.getPrimaryKeyColumn());
+        if (childKey.getType() != parentKey.getType()) {
+            throw new IllegalArgumentException(
+                "Foreign key type " + childKey.getType()
+                    + " does not match primary key type " + parentKey.getType()
+            );
+        }
+        for (ForeignKey existing : child.getForeignKeys()) {
+            if (existing.getChildColumn().equalsIgnoreCase(childKey.getName())) {
+                throw new IllegalArgumentException(
+                    "Column " + childKey.getName() + " already has a foreign key"
+                );
+            }
+        }
+
+        ForeignKey foreignKey = new ForeignKey(
+            childKey.getName(), childIndex, parent, parent.getPrimaryKeyColumn()
+        );
+        for (Row row : child.getRows()) {
+            foreignKey.check(row);
+        }
+        child.addForeignKey(foreignKey);
+    }
 }

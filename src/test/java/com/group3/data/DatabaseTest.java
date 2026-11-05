@@ -228,6 +228,52 @@ class DatabaseTest {
 
 
     // ---------------------------------------------------
+    // FOREIGN KEY
+    // ---------------------------------------------------
+
+    @Test
+    void foreignKeyRejectsAMissingId() {
+        Database database = databaseWithStudents();
+        Table enrollments = enrollments(99, "CS");
+        database.addTable(enrollments);
+
+        IllegalArgumentException e = assertThrows(
+            IllegalArgumentException.class,
+            () -> database.addForeignKey("enrollments", "student_id", "students", "id")
+        );
+
+        assertTrue(e.getMessage().contains("no matching"));
+        assertTrue(enrollments.getForeignKeys().isEmpty());
+    }
+
+    @Test
+    void foreignKeyAcceptsNullAndAMatchingId() {
+        Database database = databaseWithStudents();
+        Table enrollments = new Table("enrollments", enrollmentSchema(), List.of(
+            enrollment(1, "CS"),
+            enrollment(null, "Math")
+        ));
+        database.addTable(enrollments);
+
+        database.addForeignKey("enrollments", "student_id", "students", "id");
+
+        assertEquals(1, enrollments.getForeignKeys().size());
+        enrollments.addRow(enrollment(2, "Art"));
+        assertEquals(3, enrollments.size());
+    }
+
+    @Test
+    void foreignKeyRejectsARowAddedLater() {
+        Database database = databaseWithStudents();
+        Table enrollments = new Table("enrollments", enrollmentSchema(), List.of(enrollment(1, "CS")));
+        database.addTable(enrollments);
+        database.addForeignKey("enrollments", "student_id", "students", "id");
+
+        assertThrows(IllegalArgumentException.class, () -> enrollments.addRow(enrollment(5, "Art")));
+        assertEquals(1, enrollments.size());
+    }
+
+    // ---------------------------------------------------
     // HELPERS
     // ---------------------------------------------------
 
@@ -244,6 +290,45 @@ class DatabaseTest {
                 new Column("name", DataType.STRING),
                 new Column("gpa", DataType.FLOAT),
                 new Column("active", DataType.BOOLEAN)
+        ));
+    }
+
+    private Database databaseWithStudents() {
+        Database database = new Database();
+        Table students = new Table("students", createStudentSchema(), List.of(
+            new Row(List.of(
+                new Value(DataType.INTEGER, 1),
+                new Value(DataType.STRING, "Ada"),
+                new Value(DataType.FLOAT, 3.5),
+                new Value(DataType.BOOLEAN, true)
+            )),
+            new Row(List.of(
+                new Value(DataType.INTEGER, 2),
+                new Value(DataType.STRING, "Bob"),
+                new Value(DataType.FLOAT, 3.0),
+                new Value(DataType.BOOLEAN, true)
+            ))
+        ));
+        students.setPrimaryKey("id");
+        database.addTable(students);
+        return database;
+    }
+
+    private Schema enrollmentSchema() {
+        return new Schema(List.of(
+            new Column("student_id", DataType.INTEGER),
+            new Column("course", DataType.STRING)
+        ));
+    }
+
+    private Table enrollments(Integer studentId, String course) {
+        return new Table("enrollments", enrollmentSchema(), List.of(enrollment(studentId, course)));
+    }
+
+    private Row enrollment(Integer studentId, String course) {
+        return new Row(List.of(
+            new Value(DataType.INTEGER, studentId),
+            new Value(DataType.STRING, course)
         ));
     }
 

@@ -10,6 +10,7 @@ import java.util.List;
 
 import com.group3.data.Column;
 import com.group3.data.Database;
+import com.group3.data.ForeignKey;
 import com.group3.data.Row;
 import com.group3.data.Table;
 import com.group3.engine.QueryEngine;
@@ -113,6 +114,18 @@ public class Cli {
                 requireArgs(parts, 2, ".schema <table>");
                 printSchema(database.getTable(parts[1]));
             }
+            case ".pk" -> {
+                requireArgs(parts, 3, ".pk <table> <column>");
+                Table table = database.getTable(parts[1]);
+                table.setPrimaryKey(parts[2]);
+                out.println("Primary key " + table.getPrimaryKeyColumn() + " on " + table.getName());
+            }
+            case ".fk" -> {
+                requireArgs(parts, 5, ".fk <child> <childColumn> <parent> <parentColumn>");
+                database.addForeignKey(parts[1], parts[2], parts[3], parts[4]);
+                out.println("Foreign key " + parts[1] + "." + parts[2]
+                    + " references " + parts[3] + "." + parts[4]);
+            }
             case ".load" -> {
                 if (parts.length < 2 || parts.length > 3) {
                     throw new IllegalArgumentException("Usage: .load <file.csv> [table]");
@@ -201,7 +214,18 @@ public class Cli {
 
     private void printSchema(Table table) {
         for (Column column : table.getSchema().getColumns()) {
-            out.println(column.getName() + " " + column.getType());
+            StringBuilder line = new StringBuilder(column.getName())
+                .append(' ')
+                .append(column.getType());
+            if (column.getName().equalsIgnoreCase(table.getPrimaryKeyColumn())) {
+                line.append(" primary key");
+            }
+            for (ForeignKey foreignKey : table.getForeignKeys()) {
+                if (foreignKey.getChildColumn().equalsIgnoreCase(column.getName())) {
+                    line.append(" foreign key");
+                }
+            }
+            out.println(line);
         }
     }
 
@@ -212,6 +236,9 @@ public class Cli {
         out.println("  .export <file.csv>         write the latest query result to CSV");
         out.println("  .tables                    list loaded tables");
         out.println("  .schema <table>            show a table's columns");
+        out.println("  .pk <table> <column>       declare a primary key");
+        out.println("  .fk <child> <column> <parent> <column>");
+        out.println("                             declare a foreign key");
         out.println("  .read <script.sql>         run commands from a file");
         out.println("  .help                      show this message");
         out.println("  .quit                      exit");

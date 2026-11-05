@@ -152,7 +152,8 @@ class CliTest {
     void helpListsCommands() throws Exception {
         String output = run(".help\n");
 
-        for (String command : new String[] {".load", ".save", ".export", ".tables", ".schema", ".read", ".quit"}) {
+        for (String command : new String[] {
+            ".load", ".save", ".export", ".tables", ".schema", ".pk", ".fk", ".read", ".quit"}) {
             assertTrue(output.contains(command), command);
         }
     }
@@ -237,5 +238,25 @@ class CliTest {
     @Test
     void missingScriptReportsError() throws Exception {
         assertTrue(run(".read /no/such/script.sql\n").contains("Error: Script not found"));
+    }
+
+    @Test
+    void keyCommandsReportABadKey(@TempDir Path dir) throws Exception {
+        Path students = dir.resolve("students.csv");
+        Path enrollments = dir.resolve("enrollments.csv");
+        Files.writeString(students, "id,name\n1,Ada\n2,Bob\n");
+        Files.writeString(enrollments, "student_id,course\n9,CS\n");
+
+        String output = run(
+            ".load " + students + "\n" +
+            ".load " + enrollments + "\n" +
+            ".pk students missing\n" +
+            ".pk students id\n" +
+            ".fk enrollments student_id students id\n" +
+            ".schema students\n");
+
+        assertTrue(output.contains("Error: Column not found: missing"));
+        assertTrue(output.contains("Error: Foreign key student_id has no matching students.id"));
+        assertTrue(output.contains("id INTEGER primary key"));
     }
 }
