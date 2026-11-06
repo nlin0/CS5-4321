@@ -88,8 +88,9 @@ public final class TypeInference {
 
     /**
      * Determines the common type between two inferred values.
+     * Package-private so CSVReader can infer types one row at a time.
      */
-    private static DataType mergeTypes(
+    static DataType mergeTypes(
             DataType first,
             DataType second) {
 
