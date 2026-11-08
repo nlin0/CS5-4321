@@ -10,35 +10,54 @@ import com.group3.data.Row;
 import com.group3.data.Schema;
 import com.group3.data.Table;
 import com.group3.data.Value;
+import com.group3.expression.ComparisonOperator;
 
 /**
- * Inner equi-join implemented with sort-merge join.
+ * Inner join implemented with sort-merge join, for equality and for
+ * inequality conditions (=, !=, <, <=, >, >=) between one column of
+ * each table.
  *
- * <p>Each input is sorted on its join key, then the two sorted streams are
- * advanced together. When a key appears more than once on either side, every
- * row in the left key group is paired with every row in the right key group.
- * Input tables are never modified.</p>
+ * Each input is sorted on its join key (rows with a null key are dropped,
+ * because a comparison with null is never true).
+ *
  */
 public class SortMergeJoinOperator {
 
-    /** Joins two tables, using each table name as its output-column qualifier. */
+    /** Equi-join of two tables, using each table name as its output-column qualifier. */
     public Table innerJoin(Table left, Table right, String leftColumn, String rightColumn) {
-        if (left == null || right == null) {
-            throw new IllegalArgumentException("Both tables are required for a join");
-        }
-        return innerJoin(left, left.getName(), right, right.getName(), leftColumn, rightColumn);
+        return innerJoin(left, right, leftColumn, ComparisonOperator.EQUAL, rightColumn);
     }
 
-    /** Joins two tables under explicit aliases, which supports self-joins. */
+    /** Equi-join under explicit aliases, which supports self-joins. */
     public Table innerJoin(
             Table left, String leftAlias,
             Table right, String rightAlias,
             String leftColumn, String rightColumn) {
+        return innerJoin(left, leftAlias, right, rightAlias,
+            leftColumn, ComparisonOperator.EQUAL, rightColumn);
+    }
 
-        JoinPlan plan = validate(left, leftAlias, right, rightAlias, leftColumn, rightColumn);
+
+    public Table innerJoin(
+            Table left, Table right,
+            String leftColumn, ComparisonOperator operator, String rightColumn) {
+        if (left == null || right == null) {
+            throw new IllegalArgumentException("Both tables are required for a join");
+        }
+        return innerJoin(left, left.getName(), right, right.getName(),
+            leftColumn, operator, rightColumn);
+    }
+
+
+    public Table innerJoin(
+            Table left, String leftAlias,
+            Table right, String rightAlias,
+            String leftColumn, ComparisonOperator operator, String rightColumn) {
+
+        JoinPlan plan = validate(left, leftAlias, right, rightAlias, leftColumn, operator, rightColumn);
         List<Row> leftRows = sortedNonNullRows(left.getRows(), plan.leftIndex());
         List<Row> rightRows = sortedNonNullRows(right.getRows(), plan.rightIndex());
-        List<Row> joined = merge(leftRows, plan.leftIndex(), rightRows, plan.rightIndex());
+        List<Row> joined = merge(leftRows, plan.leftIndex(), rightRows, plan.rightIndex(), operator);
 
         return new Table(
             leftAlias + "_" + rightAlias,
@@ -50,7 +69,7 @@ public class SortMergeJoinOperator {
     private static JoinPlan validate(
             Table left, String leftAlias,
             Table right, String rightAlias,
-            String leftColumn, String rightColumn) {
+            String leftColumn, ComparisonOperator operator, String rightColumn) {
         if (left == null || right == null) {
             throw new IllegalArgumentException("Both tables are required for a join");
         }
@@ -64,6 +83,9 @@ public class SortMergeJoinOperator {
         }
         if (isBlank(leftColumn) || isBlank(rightColumn)) {
             throw new IllegalArgumentException("Both join columns are required");
+        }
+        if (operator == null) {
+            throw new IllegalArgumentException("A join comparison operator is required");
         }
 
         int leftIndex = left.getSchema().indexOf(leftColumn);
@@ -83,6 +105,10 @@ public class SortMergeJoinOperator {
                     + rightAlias + "." + rightColumn + " (" + rightType + ")"
             );
         }
+        // Same rule as WHERE comparisons: booleans only support = and !=.
+        if (operator.isOrdering() && leftType == DataType.BOOLEAN) {
+            throw new IllegalArgumentException("Boolean columns only support = and != in a join");
+        }
         return new JoinPlan(leftIndex, rightIndex);
     }
 
@@ -100,39 +126,47 @@ public class SortMergeJoinOperator {
     }
 
     private static List<Row> merge(
-            List<Row> leftRows, int leftIndex, List<Row> rightRows, int rightIndex) {
+            List<Row> leftRows, int leftIndex,
+            List<Row> rightRows, int rightIndex,
+            ComparisonOperator operator) {
         List<Row> joined = new ArrayList<>();
-        int left = 0;
-        int right = 0;
+        int size = rightRows.size();
+        int lo = 0; // first right row with key >= the current left key
+        int hi = 0; // first right row with key >  the current left key
 
-        while (left < leftRows.size() && right < rightRows.size()) {
-            int comparison = compareKeys(leftRows.get(left).get(leftIndex), rightRows.get(right).get(rightIndex));
-            if (comparison < 0) {
-                left++;
-            } else if (comparison > 0) {
-                right++;
-            } else {
-                int leftEnd = endOfKeyGroup(leftRows, left, leftIndex);
-                int rightEnd = endOfKeyGroup(rightRows, right, rightIndex);
-                for (int l = left; l < leftEnd; l++) {
-                    for (int r = right; r < rightEnd; r++) {
-                        joined.add(combine(leftRows.get(l), rightRows.get(r)));
-                    }
+        for (Row leftRow : leftRows) {
+            Value leftKey = leftRow.get(leftIndex);
+
+            while (lo < size && compareKeys(rightRows.get(lo).get(rightIndex), leftKey) < 0) {
+                lo++;
+            }
+            if (hi < lo) {
+                hi = lo;
+            }
+            while (hi < size && compareKeys(rightRows.get(hi).get(rightIndex), leftKey) <= 0) {
+                hi++;
+            }
+
+            switch (operator) {
+                case EQUAL -> emit(joined, leftRow, rightRows, lo, hi);
+                case NOT_EQUAL -> {
+                    emit(joined, leftRow, rightRows, 0, lo);
+                    emit(joined, leftRow, rightRows, hi, size);
                 }
-                left = leftEnd;
-                right = rightEnd;
+                case LESS_THAN -> emit(joined, leftRow, rightRows, hi, size);
+                case LESS_OR_EQUAL -> emit(joined, leftRow, rightRows, lo, size);
+                case GREATER_THAN -> emit(joined, leftRow, rightRows, 0, lo);
+                case GREATER_OR_EQUAL -> emit(joined, leftRow, rightRows, 0, hi);
             }
         }
         return joined;
     }
 
-    private static int endOfKeyGroup(List<Row> rows, int start, int keyIndex) {
-        Value key = rows.get(start).get(keyIndex);
-        int end = start + 1;
-        while (end < rows.size() && compareKeys(key, rows.get(end).get(keyIndex)) == 0) {
-            end++;
+    // Pairs one left row with right rows [from, to).
+    private static void emit(List<Row> joined, Row leftRow, List<Row> rightRows, int from, int to) {
+        for (int r = from; r < to; r++) {
+            joined.add(combine(leftRow, rightRows.get(r)));
         }
-        return end;
     }
 
     private static int compareKeys(Value left, Value right) {
