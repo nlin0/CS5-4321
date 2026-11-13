@@ -2,6 +2,7 @@ package com.group3.operator;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -17,11 +18,16 @@ import com.group3.engine.QueryResult;
 public class AggregateOperator {
 
     public QueryResult execute(Table table, List<String> groupByColumns, List<AggregateExpression> aggregates) {
+        return execute(table.getSchema(), table.getRows().iterator(), groupByColumns, aggregates);
+    }
+
+    /** Same as above but consumes rows from an iterator, so no filtered Table has to be built first. */
+    public QueryResult execute(Schema input, Iterator<Row> rows, List<String> groupByColumns,
+                               List<AggregateExpression> aggregates) {
         if (aggregates == null || aggregates.isEmpty()) {
             throw new IllegalArgumentException("At least one aggregate is required");
         }
 
-        Schema input = table.getSchema();
         List<Integer> groupIndexes = indexes(input, groupByColumns);
         List<Integer> aggregateIndexes = aggregateIndexes(input, aggregates);
         Schema outputSchema = outputSchema(input, groupIndexes, aggregates, aggregateIndexes);
@@ -30,7 +36,8 @@ public class AggregateOperator {
         if (groupIndexes.isEmpty()) {
             groups.put(List.of(), new ArrayList<>());
         }
-        for (Row row : table.getRows()) {
+        while (rows.hasNext()) {
+            Row row = rows.next();
             List<Value> key = new ArrayList<>();
             for (int index : groupIndexes) {
                 key.add(row.get(index));

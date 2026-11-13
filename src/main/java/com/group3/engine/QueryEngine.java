@@ -1,19 +1,21 @@
 package com.group3.engine;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 import com.group3.data.Column;
 import com.group3.data.Database;
 import com.group3.data.Row;
 import com.group3.data.Schema;
 import com.group3.data.Table;
-import com.group3.data.Value;
 import com.group3.parser.Query;
 import com.group3.parser.SelectColumn;
 import com.group3.operator.AggregateOperator;
-import com.group3.operator.DistinctOperator;
 import com.group3.operator.FilterOperator;
+import com.group3.operator.ProjectOperator;
 import com.group3.operator.SortOperator;
 
 /**
@@ -21,6 +23,12 @@ import com.group3.operator.SortOperator;
  * FROM -> WHERE -> GROUP BY/aggregates -> HAVING -> ORDER BY -> SELECT -> DISTINCT -> LIMIT.
  */
 public class QueryEngine {
+
+    /**
+     * Supported dataset size: tables of up to this many rows are expected to work within default JVM memory.
+     * Initial target; to be confirmed with Person 4. Informational only, it is not enforced.
+     */
+    public static final int SUPPORTED_MAX_ROWS_PER_TABLE = 100_000;
 
     private final Database database;
 
@@ -36,16 +44,16 @@ public class QueryEngine {
         Table table = database.getTable(query.getTableName());
         Schema schema = table.getSchema();
 
-        // WHERE, against the source columns
-        List<Row> rows = new FilterOperator().apply(schema, table.getRows(), query.getWhere());
+        // WHERE, against the source columns. Lazy: rows are pulled through the pipeline one at a time.
+        FilterOperator filter = new FilterOperator();
+        Iterator<Row> rows = filter.iterator(schema, table.getRows().iterator(), query.getWhere());
 
-        // GROUP BY / aggregates, then HAVING against the grouped rows
+        // GROUP BY / aggregates (consumes the filtered rows directly), then HAVING against the grouped rows
         if (query.hasAggregates()) {
-            Table filtered = new Table(table.getName(), schema, rows);
             QueryResult grouped = new AggregateOperator().execute(
-                filtered, query.getGroupByColumns(), query.getAggregates());
+                schema, rows, query.getGroupByColumns(), query.getAggregates());
             schema = grouped.getSchema();
-            rows = new FilterOperator().apply(schema, grouped.getRows(), query.getHaving());
+            rows = filter.iterator(schema, grouped.getRows().iterator(), query.getHaving());
         }
 
         // Resolve the SELECT list up front so an unknown column is reported before any work is done.
@@ -55,15 +63,17 @@ public class QueryEngine {
         Schema outputSchema = new Schema(columns);
 
         // ORDER BY on the pre-projection schema, so it may use unselected columns and source names behind aliases.
-        List<Row> sorted = new SortOperator().apply(schema, rows, query.getOrderBy());
-
-        // SELECT
-        List<Row> projected = new ArrayList<>();
-        for (Row row : sorted) {
-            projected.add(project(row, indexes));
+        // Sorting needs every row, so this is the one place the stream is materialized.
+        if (query.getOrderBy() != null && !query.getOrderBy().isEmpty()) {
+            List<Row> buffered = new ArrayList<>();
+            rows.forEachRemaining(buffered::add);
+            rows = new SortOperator().apply(schema, buffered, query.getOrderBy()).iterator();
         }
 
-        return distinctAndLimit(query, outputSchema, projected);
+        // SELECT
+        rows = new ProjectOperator().iterator(rows, indexes);
+
+        return distinctAndLimit(query, outputSchema, rows);
     }
 
     /**
@@ -92,22 +102,17 @@ public class QueryEngine {
         }
     }
 
-    /** Applies DISTINCT then LIMIT to rows that are already sorted. */
-    private QueryResult distinctAndLimit(Query query, Schema schema, List<Row> rows) {
-        if (query.isDistinct()) {
-            rows = new DistinctOperator().apply(rows);
+    /** Applies DISTINCT then LIMIT while draining the stream, stopping as soon as LIMIT rows are collected. */
+    private QueryResult distinctAndLimit(Query query, Schema schema, Iterator<Row> rows) {
+        Integer limit = query.getLimit();
+        Set<Row> seen = query.isDistinct() ? new HashSet<>() : null;
+        List<Row> result = new ArrayList<>();
+        while ((limit == null || result.size() < limit) && rows.hasNext()) {
+            Row row = rows.next();
+            if (seen == null || seen.add(row)) {
+                result.add(row);
+            }
         }
-        if (query.getLimit() != null && query.getLimit() < rows.size()) {
-            rows = rows.subList(0, query.getLimit());
-        }
-        return new QueryResult(schema, rows);
-    }
-
-    private Row project(Row row, List<Integer> indexes) {
-        List<Value> values = new ArrayList<>();
-        for (int index : indexes) {
-            values.add(row.get(index));
-        }
-        return new Row(values);
+        return new QueryResult(schema, result);
     }
 }
