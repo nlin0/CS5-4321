@@ -10,6 +10,9 @@ import com.group3.data.Schema;
 import com.group3.data.Table;
 import com.group3.data.Value;
 import com.group3.parser.Query;
+import com.group3.parser.JoinSpec;
+import com.group3.operator.JoinOperator;
+import com.group3.operator.GraceHashJoinOperator;
 import com.group3.parser.SelectColumn;
 import com.group3.operator.AggregateOperator;
 import com.group3.operator.DistinctOperator;
@@ -23,6 +26,24 @@ import com.group3.operator.SortOperator;
 public class QueryEngine {
 
     private final Database database;
+    private String joinMode = "auto";
+    private int partitionCount = 16;
+    private int maxBuildRows = 100_000;
+    private String lastJoin;
+
+    public void setJoin(String mode, int partitions, int maxRows) {
+        if (!List.of("auto", "hash", "grace").contains(mode)) {
+            throw new IllegalArgumentException("Join mode must be auto, hash, or grace");
+        }
+        new GraceHashJoinOperator(partitions, maxRows, null);
+        joinMode = mode;
+        partitionCount = partitions;
+        maxBuildRows = maxRows;
+    }
+
+    public String getLastJoin() {
+        return lastJoin;
+    }
 
     public QueryEngine(Database database) {
         if (database == null) {
@@ -33,7 +54,8 @@ public class QueryEngine {
 
     public QueryResult processQuery(Query query) {
         // FROM
-        Table table = database.getTable(query.getTableName());
+        lastJoin = null;
+        Table table = source(query);
         Schema schema = table.getSchema();
 
         // WHERE, against the source columns
@@ -64,6 +86,35 @@ public class QueryEngine {
         }
 
         return distinctAndLimit(query, outputSchema, projected);
+    }
+
+    private Table source(Query query) {
+        Table left = database.getTable(query.getTableName());
+        JoinSpec join = query.getJoin();
+        if (join == null) {
+            return left;
+        }
+        Table right = database.getTable(join.tableName());
+        boolean useGrace = joinMode.equals("grace")
+            || (joinMode.equals("auto") && right.size() > maxBuildRows);
+        JoinOperator operator;
+        if (useGrace) {
+            operator = new GraceHashJoinOperator(partitionCount, maxBuildRows, null);
+        } else {
+            operator = new JoinOperator();
+        }
+        String leftAlias = left.getName();
+        if (query.getTableAlias() != null) {
+            leftAlias = query.getTableAlias();
+        }
+        Table result = operator.innerJoin(left, leftAlias, right, join.alias(),
+            join.leftColumn(), join.rightColumn());
+        if (useGrace) {
+            lastJoin = "grace";
+        } else {
+            lastJoin = "hash";
+        }
+        return result;
     }
 
     /**

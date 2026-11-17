@@ -14,6 +14,8 @@ import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.select.AllColumns;
+import net.sf.jsqlparser.statement.select.AllTableColumns;
+import net.sf.jsqlparser.statement.select.Join;
 import net.sf.jsqlparser.statement.select.Distinct;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 import net.sf.jsqlparser.statement.select.Limit;
@@ -77,6 +79,8 @@ public class SQLParser {
         }
 
         Table table = (Table) select.getFromItem();
+        JoinSpec join = parseJoin(select, table);
+        boolean joined = join != null;
         List<String> columns = new ArrayList<>();
         List<AggregateExpression> aggregates = new ArrayList<>();
         List<SelectColumn> selectList = new ArrayList<>();
@@ -84,16 +88,20 @@ public class SQLParser {
         Map<String, String> columnAliases = new HashMap<>();
 
         for (SelectItem<?> item : select.getSelectItems()) {
+            if (item.getExpression() instanceof AllTableColumns && joined) {
+                throw new UnsupportedOperationException("Use * or explicit columns instead of table.* in joins");
+            }
             if (item.getExpression() instanceof AllColumns) {
                 columns.add("*");
                 selectList.add(SelectColumn.star());
             } else if (item.getExpression() instanceof Column) {
                 Column column = (Column) item.getExpression();
-                columns.add(column.getColumnName());
+                String name = sourceName(column, joined);
+                columns.add(name);
                 String alias = item.getAlias() == null ? null : unquoteIdentifier(item.getAlias().getName());
-                selectList.add(SelectColumn.column(column.getColumnName(), alias));
+                selectList.add(SelectColumn.column(name, alias));
                 if (alias != null) {
-                    columnAliases.put(alias.toLowerCase(Locale.ROOT), column.getColumnName());
+                    columnAliases.put(alias.toLowerCase(Locale.ROOT), name);
                 }
             } else if (item.getExpression() instanceof Function function) {
                 AggregateFunction aggregateFunction;
@@ -102,7 +110,7 @@ public class SQLParser {
                 } catch (IllegalArgumentException e) {
                     throw new UnsupportedOperationException("Unsupported SELECT function: " + function.getName());
                 }
-                String argument = aggregateArgument(function);
+                String argument = aggregateArgument(function, joined);
                 String alias = item.getAlias() == null ? null : unquoteIdentifier(item.getAlias().getName());
                 AggregateExpression aggregate = new AggregateExpression(aggregateFunction, argument, alias);
                 aggregates.add(aggregate);
@@ -123,23 +131,105 @@ public class SQLParser {
                 if (!(expression instanceof Column column)) {
                     throw new UnsupportedOperationException("GROUP BY supports only column names");
                 }
-                groupByColumns.add(column.getColumnName());
+                groupByColumns.add(sourceName(column, joined));
             }
         }
         if (!aggregates.isEmpty() && !columns.equals(groupByColumns)) {
             throw new UnsupportedOperationException("Selected non-aggregate columns must match GROUP BY columns");
         }
         Expression having = parseHaving(select.getHaving(), aggregates, groupByColumns);
-        List<OrderByItem> orderBy = parseOrderBy(select, aggregates, groupByColumns, selectList, columnAliases);
+        List<OrderByItem> orderBy = parseOrderBy(select, aggregates, groupByColumns, selectList, columnAliases, joined);
         Integer limit = parseLimit(select);
         boolean distinct = parseDistinct(select);
         if (distinct && aggregates.isEmpty() && !columns.contains("*")) {
             requireOrderByInSelectList(orderBy, columns);
         }
-        Expression where = select.getWhere() == null ? null : parseWhere(select.getWhere(), table);
-        return new Query(table.getFullyQualifiedName(),
-            table.getAlias() == null ? null : table.getAlias().getName(), selectList,
-            groupByColumns, aggregates, where, having, orderBy, limit, distinct);
+        Expression where = null;
+        if (select.getWhere() != null) {
+            Table sourceTable = table;
+            if (joined) {
+                sourceTable = null;
+            }
+            where = parseWhere(select.getWhere(), sourceTable);
+        }
+        String alias = null;
+        if (joined) {
+            alias = tableAlias(table);
+        } else if (table.getAlias() != null) {
+            alias = table.getAlias().getName();
+        }
+        return new Query(table.getFullyQualifiedName(), alias, selectList,
+            groupByColumns, aggregates, where, having, orderBy, limit, distinct, join);
+    }
+
+    private JoinSpec parseJoin(PlainSelect select, Table left) {
+        if (select.getJoins() == null || select.getJoins().isEmpty()) {
+            return null;
+        }
+        if (select.getJoins().size() != 1) {
+            throw new UnsupportedOperationException("Only one INNER JOIN is supported");
+        }
+        Join join = select.getJoins().get(0);
+        if (join.isLeft() || join.isRight() || join.isFull() || join.isOuter()
+                || join.isCross() || join.isNatural() || join.isSimple() || join.isSemi()
+                || join.isAnti() || join.isApply() || join.isStraight() || join.isAsOf()
+                || join.isGlobal() || join.isAny() || join.isAll() || join.isArray()
+                || join.isWindowJoin() || join.isFetch() || join.getJoinHint() != null
+                || !(join.getRightItem() instanceof Table right)
+                || (join.getUsingColumns() != null && !join.getUsingColumns().isEmpty())
+                || join.getOnExpressions().size() != 1) {
+            throw new UnsupportedOperationException("Use INNER JOIN table ON left.column = right.column");
+        }
+        var condition = unwrapWhereParentheses(join.getOnExpressions().iterator().next());
+        if (!(condition instanceof EqualsTo equality)
+                || !(equality.getLeftExpression() instanceof Column first)
+                || !(equality.getRightExpression() instanceof Column second)) {
+            throw new UnsupportedOperationException("JOIN requires equality between two qualified columns");
+        }
+        String leftAlias = tableAlias(left);
+        String rightAlias = tableAlias(right);
+        if (leftAlias.equalsIgnoreCase(rightAlias)) {
+            throw new IllegalArgumentException("Join aliases must be different");
+        }
+        if (qualifier(first).equalsIgnoreCase(rightAlias)
+                && qualifier(second).equalsIgnoreCase(leftAlias)) {
+            Column swap = first;
+            first = second;
+            second = swap;
+        }
+        if (!qualifier(first).equalsIgnoreCase(leftAlias)
+                || !qualifier(second).equalsIgnoreCase(rightAlias)) {
+            throw new IllegalArgumentException("ON must reference one qualified column from each join side");
+        }
+        return new JoinSpec(right.getFullyQualifiedName(), rightAlias,
+            unquoteIdentifier(first.getColumnName()), unquoteIdentifier(second.getColumnName()));
+    }
+
+    private String tableAlias(Table table) {
+        String name = table.getName();
+        if (table.getAlias() != null) {
+            name = table.getAlias().getName();
+        }
+        return unquoteIdentifier(name);
+    }
+
+    private String qualifier(Column column) {
+        if (column.getTable() == null) {
+            return "";
+        }
+        return unquoteIdentifier(column.getTable().getFullyQualifiedName());
+    }
+
+    private String sourceName(Column column, boolean joined) {
+        String name = unquoteIdentifier(column.getColumnName());
+        if (!joined) {
+            return column.getColumnName();
+        }
+        String qualifier = qualifier(column);
+        if (qualifier.isEmpty()) {
+            throw new IllegalArgumentException("Qualify columns in joins, for example students.id: " + name);
+        }
+        return qualifier + "." + name;
     }
 
     /** Translate the validated AST directly so SQL precedence and parentheses are preserved. */
@@ -200,6 +290,10 @@ public class SQLParser {
     private Operand parseWhereOperand(net.sf.jsqlparser.expression.Expression expression, Table table) {
         expression = unwrapWhereParentheses(expression);
         if (expression instanceof Column column) {
+            // joined sources keep table qualifiers to distinguish columns with the same name.
+            if (table == null) {
+                return Operand.column(sourceName(column, true));
+            }
             String qualifier = column.getTable() == null ? null : column.getTable().getFullyQualifiedName();
             if (qualifier != null && !qualifier.isEmpty()
                     && !qualifier.equalsIgnoreCase(table.getName())
@@ -261,7 +355,7 @@ public class SQLParser {
 
     private List<OrderByItem> parseOrderBy(PlainSelect select, List<AggregateExpression> aggregates,
                                            List<String> groupByColumns, List<SelectColumn> selectList,
-                                           Map<String, String> columnAliases) {
+                                           Map<String, String> columnAliases, boolean joined) {
         List<OrderByItem> items = new ArrayList<>();
         if (select.getOrderByElements() == null) return items;
         for (OrderByElement element : select.getOrderByElements()) {
@@ -271,6 +365,13 @@ public class SQLParser {
                 name = resolveOrderByPosition(position.getValue(), selectList);
             } else if (expression instanceof Column column) {
                 name = unquoteIdentifier(column.getColumnName());
+                if (joined) {
+                    boolean outputAlias = columnAliases.containsKey(name.toLowerCase(Locale.ROOT))
+                        && qualifier(column).isEmpty();
+                    if (!outputAlias) {
+                        name = sourceName(column, true);
+                    }
+                }
                 // Only unqualified names can refer to SELECT aliases.
                 if (column.getTable() == null || column.getTable().getFullyQualifiedName().isEmpty()) {
                     String aliased = columnAliases.get(name.toLowerCase(Locale.ROOT));
@@ -448,7 +549,7 @@ public class SQLParser {
      * function forms. Its normalized function text is stable for our restricted
      * syntax, so extract and validate the one supported argument from it here.
      */
-    private String aggregateArgument(Function function) {
+    private String aggregateArgument(Function function, boolean joined) {
         String text = function.toString().trim();
         int openParen = text.indexOf('(');
         int closeParen = text.lastIndexOf(')');
@@ -465,6 +566,12 @@ public class SQLParser {
             throw new UnsupportedOperationException("Aggregate functions require one column or *");
         }
         int qualifier = argument.lastIndexOf('.');
+        if (joined) {
+            if (qualifier < 0) {
+                throw new IllegalArgumentException("Qualify aggregate columns in joins: " + argument);
+            }
+            return argument;
+        }
         return qualifier < 0 ? argument : argument.substring(qualifier + 1);
     }
 

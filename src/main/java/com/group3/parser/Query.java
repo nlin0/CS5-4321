@@ -7,6 +7,7 @@ import com.group3.operator.AggregateExpression;
 import com.group3.expression.Expression;
 
 public class Query {
+    private final JoinSpec join;
     private final String tableName;
     private final String tableAlias;
     private final List<SelectColumn> selectList;
@@ -49,6 +50,15 @@ public class Query {
                  List<String> groupByColumns, List<AggregateExpression> aggregates,
                  Expression where, Expression having,
                  List<OrderByItem> orderBy, Integer limit, boolean distinct) {
+        this(tableName, tableAlias, selectList, groupByColumns, aggregates,
+            where, having, orderBy, limit, distinct, null);
+    }
+
+    public Query(String tableName, String tableAlias, List<SelectColumn> selectList,
+                 List<String> groupByColumns, List<AggregateExpression> aggregates,
+                 Expression where, Expression having, List<OrderByItem> orderBy,
+                 Integer limit, boolean distinct, JoinSpec join) {
+        this.join = join;
         if (limit != null && limit < 0) {
             throw new IllegalArgumentException("LIMIT must be non-negative: " + limit);
         }
@@ -121,4 +131,8 @@ public class Query {
 
     /** SELECT items in the order written, including aggregates. */
     public List<SelectColumn> getSelectList() { return selectList; }
+
+    public JoinSpec getJoin() {
+        return join;
+    }
 }

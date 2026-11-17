@@ -98,6 +98,9 @@ public class Cli {
         String statement = sql.endsWith(";") ? sql.substring(0, sql.length() - 1) : sql;
         Query query = parser.parse(statement);
         QueryResult result = engine.processQuery(query);
+        if (engine.getLastJoin() != null) {
+            out.println("Join: " + engine.getLastJoin());
+        }
         printResult(result);
         lastResult = result;
     }
@@ -110,6 +113,20 @@ public class Cli {
             case ".help" -> printHelp();
             case ".quit", ".exit" -> running = false;
             case ".tables" -> listTables();
+            case ".join" -> {
+                if (parts.length != 2 && parts.length != 4) {
+                    throw new IllegalArgumentException("Usage: .join auto|hash|grace [partitions maxRows]");
+                }
+                int partitions = 16;
+                int maxRows = 100_000;
+                if (parts.length == 4) {
+                    partitions = Integer.parseInt(parts[2]);
+                    maxRows = Integer.parseInt(parts[3]);
+                }
+                String mode = parts[1].toLowerCase(java.util.Locale.ROOT);
+                engine.setJoin(mode, partitions, maxRows);
+                out.println("Join mode: " + mode + "; partitions: " + partitions + "; build-row limit: " + maxRows);
+            }
             case ".schema" -> {
                 requireArgs(parts, 2, ".schema <table>");
                 printSchema(database.getTable(parts[1]));
@@ -234,6 +251,8 @@ public class Cli {
         out.println("  .load <file.csv> [table]   load a CSV file as a table");
         out.println("  .save <table> <file.csv>   write a table to a CSV file");
         out.println("  .export <file.csv>         write the latest query result to CSV");
+        out.println("  .join auto|hash|grace [partitions maxRows]");
+        out.println("                             choose join mode and optional limits");
         out.println("  .tables                    list loaded tables");
         out.println("  .schema <table>            show a table's columns");
         out.println("  .pk <table> <column>       declare a primary key");

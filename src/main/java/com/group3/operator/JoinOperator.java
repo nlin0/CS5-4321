@@ -81,7 +81,12 @@ public class JoinOperator {
 
         Schema outputSchema = combinedSchema(leftAlias, leftSchema, rightAlias, rightSchema);
 
-        // Build: right rows grouped by join key. A null key can never match, so skip it.
+        return new Table(leftAlias + "_" + rightAlias, outputSchema,
+            joinRows(left, right, leftIndex, rightIndex));
+    }
+
+    protected List<Row> joinRows(Table left, Table right, int leftIndex, int rightIndex) {
+        // null keys never match, including other null keys.
         Map<Object, List<Row>> rightByKey = new HashMap<>();
         for (Row rightRow : right.getRows()) {
             Value key = rightRow.get(rightIndex);
@@ -91,7 +96,6 @@ public class JoinOperator {
             rightByKey.computeIfAbsent(keyOf(key), k -> new ArrayList<>()).add(rightRow);
         }
 
-        // Probe: for each left row, emit one output row per matching right row.
         List<Row> joined = new ArrayList<>();
         for (Row leftRow : left.getRows()) {
             Value key = leftRow.get(leftIndex);
@@ -107,7 +111,7 @@ public class JoinOperator {
             }
         }
 
-        return new Table(leftAlias + "_" + rightAlias, outputSchema, joined);
+        return joined;
     }
 
     private static Schema combinedSchema(
@@ -127,7 +131,7 @@ public class JoinOperator {
         return new Column(alias + "." + column.getName(), column.getType(), column.isNullable());
     }
 
-    private static Row combine(Row left, Row right) {
+    protected static Row combine(Row left, Row right) {
         List<Value> values = new ArrayList<>(left.size() + right.size());
         values.addAll(left.getValues());
         values.addAll(right.getValues());
@@ -137,7 +141,7 @@ public class JoinOperator {
     // Numeric keys are normalized to double so that 3 (INTEGER) matches 3.0 (FLOAT),
     // the same way WHERE comparisons treat them. (Value.equals can't be used for this:
     // it also compares the type, so Value(INTEGER, 3) != Value(FLOAT, 3.0).)
-    private static Object keyOf(Value value) {
+    protected static Object keyOf(Value value) {
         Object payload = value.getValue();
         if (payload instanceof Number number) {
             return number.doubleValue();
