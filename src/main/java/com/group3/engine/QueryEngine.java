@@ -3,7 +3,11 @@ package com.group3.engine;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 
 import com.group3.data.Column;
@@ -11,6 +15,8 @@ import com.group3.data.Database;
 import com.group3.data.Row;
 import com.group3.data.Schema;
 import com.group3.data.Table;
+import com.group3.expression.Expression;
+import com.group3.index.PartialIndex;
 import com.group3.parser.Query;
 import com.group3.parser.JoinSpec;
 import com.group3.operator.JoinOperator;
@@ -38,6 +44,8 @@ public class QueryEngine {
     private int partitionCount = 16;
     private int maxBuildRows = 100_000;
     private String lastJoin;
+    private final Map<String, PartialIndex> indexes = new LinkedHashMap<>();
+    private String lastIndex;
 
     public void setJoin(String mode, int partitions, int maxRows) {
         if (!List.of("auto", "hash", "grace").contains(mode)) {
@@ -53,6 +61,37 @@ public class QueryEngine {
         return lastJoin;
     }
 
+    /**
+     * Creates an index on table.column. With a predicate it is a partial index holding only
+     * matching rows; queries use it only when their WHERE implies that predicate.
+     * Indexes are opt-in: with none created, queries run exactly as before.
+     */
+    public PartialIndex createIndex(String name, String tableName, String column,
+                                    Expression predicate, String predicateText) {
+        String key = name == null ? null : name.toLowerCase(Locale.ROOT);
+        if (key != null && indexes.containsKey(key)) {
+            throw new IllegalArgumentException("Index already exists: " + name);
+        }
+        PartialIndex index = new PartialIndex(name, database.getTable(tableName), column, predicate, predicateText);
+        indexes.put(key, index);
+        return index;
+    }
+
+    public void dropIndex(String name) {
+        if (name == null || indexes.remove(name.toLowerCase(Locale.ROOT)) == null) {
+            throw new IllegalArgumentException("Index not found: " + name);
+        }
+    }
+
+    public List<PartialIndex> getIndexes() {
+        return List.copyOf(indexes.values());
+    }
+
+    /** Index used by the last query and how many rows it scanned, or null when none was used. */
+    public String getLastIndex() {
+        return lastIndex;
+    }
+
     public QueryEngine(Database database) {
         if (database == null) {
             throw new IllegalArgumentException("Database is required");
@@ -63,12 +102,18 @@ public class QueryEngine {
     public QueryResult processQuery(Query query) {
         // FROM
         lastJoin = null;
+        lastIndex = null;
         Table table = source(query);
         Schema schema = table.getSchema();
 
         // WHERE, against the source columns. Lazy: rows are pulled through the pipeline one at a time.
+        // A matching index narrows the rows scanned; the full WHERE still runs on every one of them.
+        Iterator<Row> scan = table.getRows().iterator();
+        if (query.getJoin() == null) {
+            scan = indexScan(table, query.getWhere(), scan);
+        }
         FilterOperator filter = new FilterOperator();
-        Iterator<Row> rows = filter.iterator(schema, table.getRows().iterator(), query.getWhere());
+        Iterator<Row> rows = filter.iterator(schema, scan, query.getWhere());
 
         // GROUP BY / aggregates (consumes the filtered rows directly), then HAVING against the grouped rows
         if (query.hasAggregates()) {
@@ -96,6 +141,52 @@ public class QueryEngine {
         rows = new ProjectOperator().iterator(rows, indexes);
 
         return distinctAndLimit(query, outputSchema, rows);
+    }
+
+    /**
+     * Picks the index on this table that yields the fewest candidate rows for the WHERE,
+     * or returns the full scan unchanged when none applies.
+     */
+    private Iterator<Row> indexScan(Table table, Expression where, Iterator<Row> fullScan) {
+        if (where == null || indexes.isEmpty() || !PartialIndex.safeToNarrow(where, table.getSchema())) {
+            return fullScan;
+        }
+        PartialIndex best = null;
+        int[] bestPositions = null;
+        for (PartialIndex index : indexes.values()) {
+            if (index.getTable() != table) {
+                continue;
+            }
+            int[] positions = index.candidates(where);
+            if (positions != null && (bestPositions == null || positions.length < bestPositions.length)) {
+                best = index;
+                bestPositions = positions;
+            }
+        }
+        if (best == null) {
+            return fullScan;
+        }
+        lastIndex = best.getName() + " (scanned " + bestPositions.length + " of " + table.size() + " rows)";
+        return positionsIterator(table.getRows(), bestPositions);
+    }
+
+    private static Iterator<Row> positionsIterator(List<Row> rows, int[] positions) {
+        return new Iterator<>() {
+            private int next;
+
+            @Override
+            public boolean hasNext() {
+                return next < positions.length;
+            }
+
+            @Override
+            public Row next() {
+                if (!hasNext()) {
+                    throw new NoSuchElementException();
+                }
+                return rows.get(positions[next++]);
+            }
+        };
     }
 
     private Table source(Query query) {

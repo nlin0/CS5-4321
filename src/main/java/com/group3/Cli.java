@@ -7,6 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import com.group3.data.Column;
 import com.group3.data.Database;
@@ -15,6 +17,8 @@ import com.group3.data.Row;
 import com.group3.data.Table;
 import com.group3.engine.QueryEngine;
 import com.group3.engine.QueryResult;
+import com.group3.expression.Expression;
+import com.group3.index.PartialIndex;
 import com.group3.parser.Query;
 import com.group3.parser.SQLParser;
 import com.group3.storage.CSVReader;
@@ -92,6 +96,25 @@ public class Cli {
         }
     }
 
+    private static final Pattern INDEX_COMMAND = Pattern.compile(
+        "(?is)\\.index\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)(?:\\s+where\\s+(.+?))?\\s*;?\\s*");
+
+    /** .index name table column [WHERE condition]; the condition goes through the normal SQL parser. */
+    private void createIndex(String input) {
+        Matcher m = INDEX_COMMAND.matcher(input.trim());
+        if (!m.matches()) {
+            throw new IllegalArgumentException("Usage: .index <name> <table> <column> [WHERE <condition>]");
+        }
+        String condition = m.group(4);
+        Expression predicate = null;
+        if (condition != null) {
+            Table table = database.getTable(m.group(2));
+            predicate = parser.parse("SELECT * FROM " + table.getName() + " WHERE " + condition).getWhere();
+        }
+        PartialIndex index = engine.createIndex(m.group(1), m.group(2), m.group(3), predicate, condition);
+        out.println("Created index " + index.describe());
+    }
+
     private void runSql(String sql) {
         // A failed query must not leave an older result available for accidental export.
         lastResult = null;
@@ -100,6 +123,9 @@ public class Cli {
         QueryResult result = engine.processQuery(query);
         if (engine.getLastJoin() != null) {
             out.println("Join: " + engine.getLastJoin());
+        }
+        if (engine.getLastIndex() != null) {
+            out.println("Index: " + engine.getLastIndex());
         }
         printResult(result);
         lastResult = result;
@@ -130,6 +156,20 @@ public class Cli {
             case ".schema" -> {
                 requireArgs(parts, 2, ".schema <table>");
                 printSchema(database.getTable(parts[1]));
+            }
+            case ".index" -> createIndex(input);
+            case ".indexes" -> {
+                if (engine.getIndexes().isEmpty()) {
+                    out.println("No indexes");
+                }
+                for (PartialIndex index : engine.getIndexes()) {
+                    out.println(index.describe());
+                }
+            }
+            case ".dropindex" -> {
+                requireArgs(parts, 2, ".dropindex <name>");
+                engine.dropIndex(parts[1]);
+                out.println("Dropped index " + parts[1]);
             }
             case ".pk" -> {
                 requireArgs(parts, 3, ".pk <table> <column>");
@@ -258,6 +298,10 @@ public class Cli {
         out.println("  .pk <table> <column>       declare a primary key");
         out.println("  .fk <child> <column> <parent> <column>");
         out.println("                             declare a foreign key");
+        out.println("  .index <name> <table> <column> [WHERE <condition>]");
+        out.println("                             create an index; with WHERE, a partial index");
+        out.println("  .indexes                   list indexes");
+        out.println("  .dropindex <name>          remove an index");
         out.println("  .read <script.sql>         run commands from a file");
         out.println("  .help                      show this message");
         out.println("  .quit                      exit");
