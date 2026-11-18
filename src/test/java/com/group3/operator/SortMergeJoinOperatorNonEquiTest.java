@@ -1,4 +1,4 @@
-package com.group3;
+package com.group3.operator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;

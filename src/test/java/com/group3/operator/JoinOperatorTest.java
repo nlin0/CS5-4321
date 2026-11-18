@@ -1,12 +1,11 @@
-package com.group3;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+package com.group3.operator;
 
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -17,8 +16,6 @@ import com.group3.data.Schema;
 import com.group3.data.Table;
 import com.group3.data.Value;
 import com.group3.expression.ComparisonExpression;
-import com.group3.operator.FilterOperator;
-import com.group3.operator.JoinOperator;
 
 class JoinOperatorTest {
 
