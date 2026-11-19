@@ -18,3 +18,5 @@ Thumbs.db
 
 # Classpath file from `mvn dependency:build-classpath`, if you made one
 cp.txt
+# Demo data (generate with python3 demo/make_orders.py)
+demo/*.csv
