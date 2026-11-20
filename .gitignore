@@ -20,3 +20,4 @@ Thumbs.db
 cp.txt
 # Demo data (generate with python3 demo/make_orders.py)
 demo/*.csv
+demo/demo-output.txt
